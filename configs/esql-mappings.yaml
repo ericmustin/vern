@@ -1,0 +1,387 @@
+# esql-mappings.yaml — ES|QL query mappings for the Instrumentation Score spec.
+#
+# Each rule maps to an ES|QL query that returns the uniform shape:
+#   rule_passed (bool), service.name (string), example (string),
+#   extent (float, 0.0-1.0)
+#
+# Templates use Go text/template — variables are resolved by `vern generate`
+# from vern.yaml before the query is embedded in the workflow.
+#
+# Field-path notes (for native OTel ingest into Elastic Serverless):
+#   service.name           -> resource.attributes.service.name
+#   service.instance.id    -> resource.attributes.service.instance.id
+#   span kind              -> top-level `kind` (PascalCase, e.g. "Internal", "Client";
+#                              SPAN_KIND_* form also matched for forward compat)
+#   parent span id         -> top-level `parent_span_id`
+#   trace id               -> top-level `trace_id`
+#   span name              -> top-level `name`
+#   duration               -> top-level `duration` (nanoseconds)
+#   k8s pod uid            -> resource.attributes.k8s.pod.uid
+#
+# All BY-clause grouping fields are RENAMEd to `service.name` so the result
+# index has a consistent schema across rules.
+
+backend: esql
+version: "0.2.0"
+spec_version: "0.1"
+
+rules:
+
+  # ─── Resource Rules ───────────────────────────────────────────
+
+  - spec_rule_id: "RES-005"
+    enabled: true
+    description: "service.name is present"
+    impact: "Critical"
+    target: "Resource"
+    query: |
+      FROM {{ .Indices.Traces }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | EVAL missing_svc = resource.attributes.service.name IS NULL OR resource.attributes.service.name == ""
+      | STATS
+          failed = COUNT(*) WHERE missing_svc,
+          example = SAMPLE(_id, 1) WHERE missing_svc,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "RES-001"
+    enabled: true
+    description: "service.instance.id is present"
+    impact: "Normal"
+    target: "Resource"
+    query: |
+      FROM {{ .Indices.Traces }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | EVAL missing_instance = resource.attributes.service.instance.id IS NULL OR resource.attributes.service.instance.id == ""
+      | STATS
+          failed = COUNT(*) WHERE missing_instance,
+          example = SAMPLE(_id, 1) WHERE missing_instance,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "RES-002"
+    enabled: true
+    description: "service.instance.id is unique across logical resources"
+    impact: "Important"
+    target: "Resource"
+    notes: >
+      Derives a logical-resource key from k8s pod uid/name, host.name,
+      container.id, and k8s.node.name. An empty key (no k8s/host/container
+      attrs) is treated as "@@UNVERIFIABLE@@" and excluded from duplicate
+      detection. A service fails if any of its instance.ids appears with
+      multiple distinct logical resources. If your cluster lacks any of
+      these fields in its mapping, the query will fail to plan and this
+      rule should be disabled.
+    query: |
+      FROM {{ .Indices.Traces }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          AND resource.attributes.service.instance.id IS NOT NULL
+          AND resource.attributes.service.instance.id != ""
+      | EVAL logical_resource = CONCAT(
+            COALESCE(resource.attributes.k8s.pod.uid, ""), "|",
+            COALESCE(resource.attributes.k8s.pod.name, ""), "|",
+            COALESCE(resource.attributes.host.name, ""), "|",
+            COALESCE(resource.attributes.container.id, ""), "|",
+            COALESCE(resource.attributes.k8s.node.name, ""))
+      | EVAL logical_resource = CASE(logical_resource == "||||", "@@UNVERIFIABLE@@", logical_resource)
+      | STATS distinct_resources = COUNT_DISTINCT(logical_resource),
+              has_unverifiable = MAX(CASE(logical_resource == "@@UNVERIFIABLE@@", 1, 0))
+              BY resource.attributes.service.name, instance_id = resource.attributes.service.instance.id
+      | EVAL is_dup = (distinct_resources - has_unverifiable) > 1
+      | STATS
+          failed = COUNT(*) WHERE is_dup,
+          example = SAMPLE(instance_id, 1) WHERE is_dup,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "RES-003"
+    enabled: true
+    description: "k8s.pod.uid is present in Kubernetes telemetry"
+    impact: "Important"
+    target: "Resource"
+    notes: >
+      Precondition: any of k8s.pod.uid, k8s.pod.name, k8s.namespace.name,
+      or k8s.node.name is present (i.e. it's a k8s workload). Non-k8s
+      services do not contribute violations.
+    query: |
+      FROM {{ .Indices.Traces }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          AND COALESCE(
+              resource.attributes.k8s.pod.uid,
+              resource.attributes.k8s.pod.name,
+              resource.attributes.k8s.namespace.name,
+              resource.attributes.k8s.node.name) IS NOT NULL
+      | EVAL missing_uid = resource.attributes.k8s.pod.uid IS NULL OR resource.attributes.k8s.pod.uid == ""
+      | STATS
+          failed = COUNT(*) WHERE missing_uid,
+          example = SAMPLE(_id, 1) WHERE missing_uid,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  # ─── Span Rules ───────────────────────────────────────────────
+
+  - spec_rule_id: "SPA-001"
+    enabled: true
+    description: "Traces contain a limited number of INTERNAL spans per service"
+    impact: "Normal"
+    target: "TraceSpan"
+    notes: >
+      Counts INTERNAL spans per (trace_id, service.name); a service fails
+      on traces with more than 10 internal spans. Matches both PascalCase
+      ("Internal") and OTel SDK form ("SPAN_KIND_INTERNAL").
+    query: |
+      FROM {{ .Indices.Traces }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          AND kind IN ("Internal", "SPAN_KIND_INTERNAL")
+      | STATS internal_count = COUNT(*) BY trace_id, resource.attributes.service.name
+      | EVAL too_many = internal_count > 10
+      | STATS
+          failed = COUNT(*) WHERE too_many,
+          example = SAMPLE(trace_id, 1) WHERE too_many,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "SPA-002"
+    enabled: false
+    status: "requires-validation"
+    description: "Traces do not contain orphan spans"
+    impact: "Normal"
+    target: "TraceSpan"
+    notes: >
+      Uses an ES|QL IN-subquery that may not be supported across all
+      Elastic versions. Disabled by default until validated against the
+      target cluster.
+    query: |
+      FROM {{ .Indices.Traces }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          AND parent_span_id IS NOT NULL
+          AND parent_span_id != ""
+      | EVAL parent_exists = parent_span_id IN (
+          FROM {{ .Indices.Traces }}
+          | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          | KEEP span_id
+        )
+      | EVAL is_orphan = NOT parent_exists
+      | STATS
+          orphans = COUNT(*) WHERE is_orphan,
+          example = SAMPLE(parent_span_id, 1) WHERE is_orphan,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (orphans == 0),
+          extent = CASE(total != 0, orphans::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "SPA-003"
+    enabled: true
+    description: "Span names have bound cardinality"
+    impact: "Important"
+    target: "TraceSpan"
+    notes: >
+      Spec criteria is TODO; this is the heuristic used in the peek
+      reference (useInstrumentationScore.ts): pass if total spans < 50
+      (low sample size), or if distinct span names <= 200, or if the
+      ratio (distinct / total) <= 0.3. Otherwise fail with extent equal
+      to the cardinality ratio.
+    query: |
+      FROM {{ .Indices.Traces }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          AND name IS NOT NULL
+      | STATS total = COUNT(*),
+              distinct_names = COUNT_DISTINCT(name)
+            BY resource.attributes.service.name
+      | EVAL ratio = CASE(total != 0, distinct_names::double / total::double, 0.0)
+      | EVAL rule_passed = total < 50 OR distinct_names <= 200 OR ratio <= 0.3,
+          extent = CASE(rule_passed, 0.0, ratio),
+          example = CONCAT(TO_STRING(distinct_names), " distinct / ", TO_STRING(total), " spans")
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "SPA-004"
+    enabled: true
+    description: "Root spans are not CLIENT spans"
+    impact: "Important"
+    target: "TraceSpan"
+    notes: >
+      A root document is one with no parent_span_id; a CLIENT root is a
+      violation. Matches both "Client" and "SPAN_KIND_CLIENT".
+    query: |
+      FROM {{ .Indices.Traces }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          AND (parent_span_id IS NULL OR parent_span_id == "")
+      | EVAL is_client_root = kind IN ("Client", "SPAN_KIND_CLIENT")
+      | STATS
+          failed = COUNT(*) WHERE is_client_root,
+          example = SAMPLE(_id, 1) WHERE is_client_root,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "SPA-005"
+    enabled: true
+    description: "Traces do not contain a high number of short INTERNAL spans"
+    impact: "Important"
+    target: "TraceSpan"
+    notes: >
+      Per the spec rationale, SPA-005 specifically targets INTERNAL spans
+      (excessive instrumentation overhead). A trace fails if it has more
+      than 20 short INTERNAL spans. duration is in nanoseconds; 5ms = 5e6 ns.
+    query: |
+      FROM {{ .Indices.Traces }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+          AND kind IN ("Internal", "SPAN_KIND_INTERNAL")
+          AND duration IS NOT NULL
+      | EVAL is_short = duration < 5000000
+      | STATS short_count = COUNT(*) WHERE is_short BY trace_id, resource.attributes.service.name
+      | EVAL too_many_short = short_count > 20
+      | STATS
+          failed = COUNT(*) WHERE too_many_short,
+          example = SAMPLE(trace_id, 1) WHERE too_many_short,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  # ─── Log Rules ────────────────────────────────────────────────
+
+  - spec_rule_id: "LOG-001"
+    enabled: true
+    description: "Debug-level logs are not enabled in production for >14 days"
+    impact: "Important"
+    target: "Log"
+    notes: >
+      Looks back 14 days. A service is in production if its
+      resource.attributes.deployment.environment.name starts with "prod"
+      (case-insensitive).
+    query: |
+      FROM {{ .Indices.Logs }} METADATA _id
+      | WHERE @timestamp > NOW() - 14d
+      | EVAL is_prod = STARTS_WITH(TO_LOWER(COALESCE(resource.attributes.deployment.environment.name, "")), "prod"),
+          is_debug = TO_UPPER(COALESCE(severity_text, "")) == "DEBUG"
+      | EVAL violation = is_prod AND is_debug
+      | STATS
+          failed = COUNT(*) WHERE violation,
+          example = SAMPLE(_id, 1) WHERE violation,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "LOG-002"
+    enabled: true
+    description: "Log records have severityNumber set"
+    impact: "Important"
+    target: "Log"
+    query: |
+      FROM {{ .Indices.Logs }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | EVAL no_sev = severity_number IS NULL OR severity_number == 0
+      | STATS
+          logs_wo_severity = COUNT(*) WHERE no_sev,
+          example = SAMPLE(_id, 1) WHERE no_sev,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (logs_wo_severity == 0),
+          extent = CASE(total != 0, logs_wo_severity::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  # ─── Metric Rules (disabled — schema needs design work) ────────
+  #
+  # Native OTel metric ingestion in Elastic Serverless stores each metric
+  # as its own field path under `metrics.*` (e.g. `metrics.process.cpu.time`)
+  # rather than as a `metric.name` keyword. MET-001 (cardinality) and MET-003
+  # (consistent units) need a different query strategy — likely targeting
+  # the APM-style aggregation streams (metrics-service_*.otel-default).
+
+  - spec_rule_id: "MET-001"
+    enabled: false
+    status: "needs-design"
+    description: "Metric attributes have bound cardinality"
+    impact: "Important"
+    target: "Metric"
+    query: |
+      FROM {{ .Indices.Metrics }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | KEEP _id
+
+  - spec_rule_id: "MET-003"
+    enabled: false
+    status: "needs-design"
+    description: "Metric names are consistently associated with the same metric unit"
+    impact: "Important"
+    target: "Metric"
+    query: |
+      FROM {{ .Indices.Metrics }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | KEEP _id
+
+  # ─── Score Aggregation (final step in workflow) ───────────────
+
+  - spec_rule_id: "_SCORE_AGGREGATION"
+    enabled: true
+    is_aggregation: true
+    description: "Calculate the final instrumentation score per service"
+    notes: >
+      Aggregates per-service rule results written by store_* steps over
+      the last 2 hours (excluding the bootstrap placeholder row). Score
+      formula matches the spec:
+      Σ(P_i * W_i) / Σ(T_i * W_i) * 100, weights
+      Critical=40, Important=30, Normal=20, Low=10.
+    query: |
+      FROM {{ .ResultIndex }}
+      | WHERE evaluated_at > NOW() - 2h
+          AND NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL"))
+          AND service.name != "_schema_init"
+      | STATS
+          critical_passed = SUM(CASE(impact == "Critical" AND rule_passed == true, 1, 0)),
+          critical_total = SUM(CASE(impact == "Critical", 1, 0)),
+          important_passed = SUM(CASE(impact == "Important" AND rule_passed == true, 1, 0)),
+          important_total = SUM(CASE(impact == "Important", 1, 0)),
+          normal_passed = SUM(CASE(impact == "Normal" AND rule_passed == true, 1, 0)),
+          normal_total = SUM(CASE(impact == "Normal", 1, 0)),
+          low_passed = SUM(CASE(impact == "Low" AND rule_passed == true, 1, 0)),
+          low_total = SUM(CASE(impact == "Low", 1, 0))
+            BY service.name
+      | EVAL
+          numerator = (critical_passed * 40) + (important_passed * 30) + (normal_passed * 20) + (low_passed * 10),
+          denominator = (critical_total * 40) + (important_total * 30) + (normal_total * 20) + (low_total * 10),
+          score = CASE(denominator != 0, (numerator::double / denominator::double) * 100, 0.0),
+          category = CASE(
+            score >= 90, "Excellent",
+            score >= 75, "Good",
+            score >= 50, "Needs Improvement",
+            "Poor"
+          )
+      | KEEP service.name, score, category,
+          critical_passed, critical_total,
+          important_passed, important_total,
+          normal_passed, normal_total,
+          low_passed, low_total

@@ -1,0 +1,20 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+/vern
+/vern.exe
+*.test
+*.out
+
+# Generated workflow files
+/workflows.yaml
+/workflows-*.yaml
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
