@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ericmustin/vern/internal/agent"
 	"github.com/ericmustin/vern/internal/config"
 	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/dashboard"
@@ -18,6 +19,7 @@ var (
 	generateMappings   string
 	generateOutput     string
 	generateDashboards string
+	generateAgentSkill string
 )
 
 var generateCmd = &cobra.Command{
@@ -84,6 +86,16 @@ var generateCmd = &cobra.Command{
 			return fmt.Errorf("write %s: %w", dashboardsPath, err)
 		}
 		fmt.Printf("Generated %s (Kibana saved objects)\n", dashboardsPath)
+
+		agentSkillPath := generateAgentSkill
+		if agentSkillPath == "" {
+			agentSkillPath = defaultAgentSkillPath(generateOutput)
+		}
+		skillMarkdown := agent.RenderSkillMarkdown(agent.Context{Config: cfg, Coverage: &cov})
+		if err := os.WriteFile(agentSkillPath, []byte(skillMarkdown), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", agentSkillPath, err)
+		}
+		fmt.Printf("Generated %s (Agent Builder skill markdown)\n", agentSkillPath)
 		return nil
 	},
 }
@@ -99,8 +111,20 @@ func defaultDashboardsPath(workflowOutput string) string {
 	return filepath.Join(dir, name+"-dashboards.ndjson")
 }
 
+// defaultAgentSkillPath puts agent-skill.md next to the workflow file.
+func defaultAgentSkillPath(workflowOutput string) string {
+	dir := filepath.Dir(workflowOutput)
+	base := filepath.Base(workflowOutput)
+	name := strings.TrimSuffix(base, filepath.Ext(base))
+	if name == "workflows" || name == "workflow" {
+		return filepath.Join(dir, "agent-skill.md")
+	}
+	return filepath.Join(dir, name+"-agent-skill.md")
+}
+
 func init() {
 	generateCmd.Flags().StringVar(&generateMappings, "mappings", "", "path to ES|QL mappings file (defaults to config.mappings)")
 	generateCmd.Flags().StringVarP(&generateOutput, "output", "o", "workflows.yaml", "output workflow YAML path")
 	generateCmd.Flags().StringVar(&generateDashboards, "dashboards", "", "output Kibana saved-objects NDJSON path (default: dashboards.ndjson next to --output)")
+	generateCmd.Flags().StringVar(&generateAgentSkill, "agent-skill", "", "output Agent Builder skill markdown path (default: agent-skill.md next to --output)")
 }

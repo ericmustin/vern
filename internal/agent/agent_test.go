@@ -24,6 +24,10 @@ func TestBuildSkill_UsesConfiguredIndexesAndCoverage(t *testing.T) {
 	}
 
 	skill := BuildSkill(Context{Config: cfg, Coverage: cov})
+	rendered := RenderSkillMarkdown(Context{Config: cfg, Coverage: cov})
+	if skill.Content != rendered {
+		t.Fatalf("BuildSkill content differs from rendered markdown")
+	}
 
 	for _, want := range []string{
 		"custom-score-results",

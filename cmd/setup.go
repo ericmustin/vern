@@ -24,6 +24,7 @@ var (
 	setupMappings       string
 	setupWorkflow       string
 	setupDashboards     string
+	setupAgentSkill     string
 	setupKibanaURL      string
 	setupAPIKey         string
 	setupReplace        bool
@@ -40,8 +41,10 @@ type setupArtifacts struct {
 	Resolved       *mappings.ResolveResult
 	Workflow       []byte
 	Dashboards     []byte
+	Skill          agent.Skill
 	WorkflowPath   string
 	DashboardsPath string
+	AgentSkillPath string
 	MappingsPath   string
 }
 
@@ -115,6 +118,9 @@ func runSetup(ctx context.Context) error {
 		if !setupSkipDashboards {
 			fmt.Printf("      would write dashboards: %s (%d bytes)\n", artifacts.DashboardsPath, len(artifacts.Dashboards))
 		}
+		if !setupSkipAgent {
+			fmt.Printf("      would write agent skill: %s (%d bytes)\n", artifacts.AgentSkillPath, len(artifacts.Skill.Content))
+		}
 	} else {
 		if err := os.WriteFile(artifacts.WorkflowPath, artifacts.Workflow, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", artifacts.WorkflowPath, err)
@@ -125,6 +131,12 @@ func runSetup(ctx context.Context) error {
 				return fmt.Errorf("write %s: %w", artifacts.DashboardsPath, err)
 			}
 			fmt.Printf("      wrote dashboards: %s (%d bytes)\n", artifacts.DashboardsPath, len(artifacts.Dashboards))
+		}
+		if !setupSkipAgent {
+			if err := os.WriteFile(artifacts.AgentSkillPath, []byte(artifacts.Skill.Content), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", artifacts.AgentSkillPath, err)
+			}
+			fmt.Printf("      wrote agent skill: %s (%d bytes)\n", artifacts.AgentSkillPath, len(artifacts.Skill.Content))
 		}
 	}
 	fmt.Printf("      coverage: partial=%t, spec=%s\n", artifacts.Coverage.PartialScore, artifacts.Coverage.SpecVersion)
@@ -193,7 +205,7 @@ func runSetup(ctx context.Context) error {
 		fmt.Printf("      would upsert skill: %s\n", agent.SkillID)
 		fmt.Printf("      would upsert agent: %s\n", agent.AgentID)
 	} else {
-		skillID, agentID, err := upsertSetupAgent(client, artifacts.Config, &artifacts.Coverage)
+		skillID, agentID, err := upsertSetupAgent(client, artifacts.Skill)
 		if err != nil {
 			return err
 		}
@@ -240,6 +252,11 @@ func buildSetupArtifacts() (*setupArtifacts, error) {
 	if dashboardsPath == "" {
 		dashboardsPath = defaultDashboardsPath(setupWorkflow)
 	}
+	agentSkillPath := setupAgentSkill
+	if agentSkillPath == "" {
+		agentSkillPath = defaultAgentSkillPath(setupWorkflow)
+	}
+	skill := agent.BuildSkill(agent.Context{Config: cfg, Coverage: &cov})
 	return &setupArtifacts{
 		Config:         cfg,
 		Mappings:       mf,
@@ -247,14 +264,15 @@ func buildSetupArtifacts() (*setupArtifacts, error) {
 		Resolved:       resolved,
 		Workflow:       workflowBytes,
 		Dashboards:     dashboardsBytes,
+		Skill:          skill,
 		WorkflowPath:   setupWorkflow,
 		DashboardsPath: dashboardsPath,
+		AgentSkillPath: agentSkillPath,
 		MappingsPath:   mappingsPath,
 	}, nil
 }
 
-func upsertSetupAgent(client *syncc.Client, cfg *config.Config, cov *coverage.Summary) (string, string, error) {
-	s := agent.BuildSkill(agent.Context{Config: cfg, Coverage: cov})
+func upsertSetupAgent(client *syncc.Client, s agent.Skill) (string, string, error) {
 	skillNoID, err := json.Marshal(struct {
 		Name        string   `json:"name"`
 		Description string   `json:"description"`
@@ -350,6 +368,7 @@ func init() {
 	setupCmd.Flags().StringVar(&setupMappings, "mappings", "", "path to ES|QL mappings file (defaults to config.mappings)")
 	setupCmd.Flags().StringVarP(&setupWorkflow, "workflow", "w", "workflows.yaml", "workflow YAML output path")
 	setupCmd.Flags().StringVar(&setupDashboards, "dashboards", "", "dashboards NDJSON output path (default: dashboards.ndjson next to --workflow)")
+	setupCmd.Flags().StringVar(&setupAgentSkill, "agent-skill", "", "Agent Builder skill markdown output path (default: agent-skill.md next to --workflow)")
 	setupCmd.Flags().StringVar(&setupKibanaURL, "kibana-url", "", "Kibana base URL (env: KIBANA_URL)")
 	setupCmd.Flags().StringVar(&setupAPIKey, "api-key", "", "Kibana API key (env: KIBANA_API_KEY)")
 	setupCmd.Flags().BoolVar(&setupReplace, "replace", false, "delete any existing workflow(s) with the same name before uploading")

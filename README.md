@@ -57,14 +57,18 @@ vern setup --replace
 `vern setup` runs:
 
 1. Review config and rule coverage
-2. Generate `workflows.yaml`
-3. Generate `dashboards.ndjson`
-4. Upload or replace the Elastic Workflow
-5. Import Kibana dashboards
-6. Create or update the Agent Builder skill and agent
+2. Generate `workflows.yaml`, `dashboards.ndjson`, and `agent-skill.md`
+3. Upload or replace the Elastic Workflow
+4. Import Kibana dashboards
+5. Create or update the Agent Builder skill and agent
+6. Print links to the generated Kibana assets
 
 It finishes with links to Workflows, the overview dashboard, the drill-down
 dashboard, and Agent Builder.
+
+`agent-skill.md` is the exact generated markdown sent to Agent Builder. Review
+that file when you want to inspect the assistant instructions without opening
+Kibana.
 
 Preview the flow without writing files or changing Kibana:
 
@@ -84,6 +88,7 @@ Full setup: review, generate, sync, dashboard import, and Agent Builder setup.
 | `--mappings` | from config | ES\|QL mappings file |
 | `--workflow`, `-w` | `workflows.yaml` | Workflow YAML output |
 | `--dashboards` | next to workflow | Dashboard NDJSON output |
+| `--agent-skill` | next to workflow | Agent Builder skill markdown output |
 | `--kibana-url` | `$KIBANA_URL` | Kibana base URL |
 | `--api-key` | `$KIBANA_API_KEY` | Kibana API key |
 | `--replace` | `false` | Replace existing workflow with the same name |
@@ -120,6 +125,7 @@ vern generate --output workflows.yaml
 | `--mappings` | from config | ES\|QL mappings file |
 | `--output`, `-o` | `workflows.yaml` | Workflow YAML output |
 | `--dashboards` | next to output | Dashboard NDJSON output |
+| `--agent-skill` | next to output | Agent Builder skill markdown output |
 
 ### `vern sync`
 
@@ -260,6 +266,7 @@ Useful paths:
 | `internal/agent` | Agent Builder skill and agent definitions |
 | `internal/sync` | Kibana API client |
 | `demo/` | Local validation stack |
+| `agent-skill.md` | Generated Agent Builder skill markdown |
 
 ## Release
 

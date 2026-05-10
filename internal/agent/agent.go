@@ -81,7 +81,7 @@ func BuildSkill(ctx Context) Skill {
 		ID:          SkillID,
 		Name:        SkillName,
 		Description: SkillDescription,
-		Content:     buildSkillContent(ctx),
+		Content:     RenderSkillMarkdown(ctx),
 		ToolIDs:     vernTools,
 	}
 }
@@ -100,7 +100,9 @@ func BuildAgent() Agent {
 	}
 }
 
-func buildSkillContent(ctx Context) string {
+// RenderSkillMarkdown returns the exact markdown content uploaded to Agent Builder.
+// It is exported so CLI commands can also persist a human-reviewable artifact.
+func RenderSkillMarkdown(ctx Context) string {
 	cfg := ctx.Config
 	if cfg == nil {
 		cfg = &config.Config{}
