@@ -6,6 +6,7 @@
 # Build artifacts
 /vern
 /vern.exe
+/dist/
 *.test
 *.out
 

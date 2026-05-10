@@ -35,10 +35,10 @@ const (
 	searchTotalsID = "vern-search-totals"
 	searchRulesID  = "vern-search-rules"
 
-	lensOverviewTable      = "vern-lens-overview-table"
-	lensOverviewPie        = "vern-lens-overview-pie"
-	lensOverviewAvgScore   = "vern-lens-overview-avg-score"
-	lensOverviewSvcCount   = "vern-lens-overview-svc-count"
-	lensDrilldownScore     = "vern-lens-drilldown-score"
-	lensDrilldownPie       = "vern-lens-drilldown-pie"
+	lensOverviewTable    = "vern-lens-overview-table"
+	lensOverviewPie      = "vern-lens-overview-pie"
+	lensOverviewAvgScore = "vern-lens-overview-avg-score"
+	lensOverviewSvcCount = "vern-lens-overview-svc-count"
+	lensDrilldownScore   = "vern-lens-drilldown-score"
+	lensDrilldownPie     = "vern-lens-drilldown-pie"
 )

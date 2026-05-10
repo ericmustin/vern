@@ -1,0 +1,57 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.license.self_generated.type=trial
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  otel-collector:
+    image: docker.elastic.co/elastic-agent/elastic-agent:9.3.0
+    command: ["otel", "--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:13133/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  trafficgen:
+    build: ./trafficgen
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - VERN_DEMO_RATE=${VERN_DEMO_RATE:-2}
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+
+  otelgen-logs:
+    image: ghcr.io/krzko/otelgen:v0.5.2
+    command:
+      - --otel-exporter-otlp-endpoint=otel-collector:4317
+      - --insecure
+      - --rate=3
+      - --duration=86400
+      - logs
+      - multi
+    depends_on:
+      otel-collector:
+        condition: service_healthy

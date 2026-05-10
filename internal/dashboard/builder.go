@@ -3,12 +3,16 @@ package dashboard
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/ericmustin/vern/internal/coverage"
 )
 
 // builder holds parameters used by every saved object factory.
 type builder struct {
+	resultIndex  string
 	indexPattern string
 	specBaseURL  string
+	coverage     *coverage.Summary
 }
 
 // jsonString serializes v into a JSON string. Several Kibana fields
@@ -127,7 +131,7 @@ func (b *builder) savedSearchRules() SavedObject {
 	return b.savedSearch(searchRulesID,
 		"Vern: Per-Rule Breakdown",
 		"Per-rule pass/fail evidence per service. rule_id links to the upstream spec.",
-		`NOT rule_id:_TOTAL AND NOT rule_id:_BOOTSTRAP`,
+		`NOT rule_id:_TOTAL AND NOT rule_id:_BOOTSTRAP AND NOT rule_id:_COVERAGE`,
 		[]string{"rule_id", "impact", "target", "rule_passed", "extent", "example", "description", "evaluated_at"},
 		"evaluated_at", "desc")
 }
@@ -200,12 +204,12 @@ func (b *builder) lensOverviewTable() SavedObject {
 	// score indexed as text). category likewise via TO_STRING for safety.
 	return b.lensFromESQL(lensOverviewTable, "Vern: Service Scores",
 		"lnsDatatable",
-		`FROM instrumentation-score-results | WHERE rule_id == "_TOTAL" | EVAL score = score::double | KEEP service.name, score, category | SORT score DESC | LIMIT 100`,
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL score = score::double | KEEP service.name, score, category | SORT score DESC | LIMIT 100`, b.resultIndex),
 		cols, viz)
 }
 
 func (b *builder) lensPiePassFail(id, title, extraWhere string) SavedObject {
-	where := `WHERE NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL"))`
+	where := `WHERE NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL", "_COVERAGE"))`
 	if extraWhere != "" {
 		where += " AND " + extraWhere
 	}
@@ -232,7 +236,7 @@ func (b *builder) lensPiePassFail(id, title, extraWhere string) SavedObject {
 		}},
 	}
 	return b.lensFromESQL(id, title, "lnsPie",
-		fmt.Sprintf(`FROM instrumentation-score-results | %s | EVAL status = CASE(rule_passed == true, "Pass", "Fail") | STATS n = COUNT(*) BY status`, where),
+		fmt.Sprintf(`FROM %s | %s | EVAL status = CASE(rule_passed == true, "Pass", "Fail") | STATS n = COUNT(*) BY status`, b.resultIndex, where),
 		cols, viz)
 }
 
@@ -250,7 +254,7 @@ func (b *builder) lensAvgScore() SavedObject {
 	}
 	return b.lensFromESQL(lensOverviewAvgScore, "Vern: Average score",
 		"lnsMetric",
-		`FROM instrumentation-score-results | WHERE rule_id == "_TOTAL" | EVAL s = score::double | STATS avg_score = ROUND(AVG(s), 1)`,
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL s = score::double | STATS avg_score = ROUND(AVG(s), 1)`, b.resultIndex),
 		cols, viz)
 }
 
@@ -267,7 +271,7 @@ func (b *builder) lensSvcCount() SavedObject {
 	}
 	return b.lensFromESQL(lensOverviewSvcCount, "Vern: Services scored",
 		"lnsMetric",
-		`FROM instrumentation-score-results | WHERE rule_id == "_TOTAL" | STATS services = COUNT(*)`,
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | STATS services = COUNT(*)`, b.resultIndex),
 		cols, viz)
 }
 
@@ -285,6 +289,6 @@ func (b *builder) lensDrilldownScore() SavedObject {
 	}
 	return b.lensFromESQL(lensDrilldownScore, "Vern: Selected service score",
 		"lnsMetric",
-		`FROM instrumentation-score-results | WHERE rule_id == "_TOTAL" | EVAL score = score::double | KEEP score | LIMIT 1`,
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL score = score::double | KEEP score | LIMIT 1`, b.resultIndex),
 		cols, viz)
 }

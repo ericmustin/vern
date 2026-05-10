@@ -10,23 +10,33 @@ import (
 	"strings"
 
 	"github.com/ericmustin/vern/internal/config"
+	"github.com/ericmustin/vern/internal/coverage"
 )
 
 const defaultSpecBaseURL = "https://github.com/instrumentation-score/spec/blob/main/rules"
 
 // Generate renders the dashboards NDJSON. The data view's index pattern is
 // derived from cfg.ESQL.ResultIndex with "*" appended.
-func Generate(cfg *config.Config) ([]byte, error) {
+func Generate(cfg *config.Config, summaries ...*coverage.Summary) ([]byte, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("nil config")
 	}
+	cfgCopy := *cfg
+	cfgCopy.ApplyDefaults()
+	cfg = &cfgCopy
 	if cfg.ESQL.ResultIndex == "" {
 		return nil, fmt.Errorf("config: esql.result_index is required")
 	}
+	var cov *coverage.Summary
+	if len(summaries) > 0 {
+		cov = summaries[0]
+	}
 
 	b := &builder{
+		resultIndex:  cfg.ESQL.ResultIndex,
 		indexPattern: ensureWildcard(cfg.ESQL.ResultIndex),
 		specBaseURL:  defaultSpecBaseURL,
+		coverage:     cov,
 	}
 
 	objects := b.buildAll()

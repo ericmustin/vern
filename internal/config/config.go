@@ -19,8 +19,10 @@ type Config struct {
 
 type ESQLConfig struct {
 	TimeWindow           string        `yaml:"time_window"`
+	ScoreLookback        string        `yaml:"score_lookback"`
 	IndexPatterns        IndexPatterns `yaml:"index_patterns"`
 	ResultIndex          string        `yaml:"result_index"`
+	AnnotationsIndex     string        `yaml:"annotations_index"`
 	Schedule             string        `yaml:"schedule"`
 	CardinalityThreshold int           `yaml:"cardinality_threshold"`
 }
@@ -52,16 +54,19 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
-	cfg.applyDefaults()
+	cfg.ApplyDefaults()
 	return &cfg, nil
 }
 
-func (c *Config) applyDefaults() {
+func (c *Config) ApplyDefaults() {
 	if c.Backend == "" {
 		c.Backend = "esql"
 	}
+	if c.RulesDir == "" {
+		c.RulesDir = "./spec/rules"
+	}
 	if c.Mappings == "" {
-		c.Mappings = "esql-mappings.yaml"
+		c.Mappings = "./configs/esql-mappings.yaml"
 	}
 	if c.Format == "" {
 		c.Format = "elastic"
@@ -69,8 +74,14 @@ func (c *Config) applyDefaults() {
 	if c.ESQL.TimeWindow == "" {
 		c.ESQL.TimeWindow = "1h"
 	}
+	if c.ESQL.ScoreLookback == "" {
+		c.ESQL.ScoreLookback = "2h"
+	}
 	if c.ESQL.ResultIndex == "" {
 		c.ESQL.ResultIndex = "instrumentation-score-results"
+	}
+	if c.ESQL.AnnotationsIndex == "" {
+		c.ESQL.AnnotationsIndex = "observability-annotations"
 	}
 	if c.ESQL.Schedule == "" {
 		c.ESQL.Schedule = "1h"
@@ -79,7 +90,7 @@ func (c *Config) applyDefaults() {
 		c.ESQL.CardinalityThreshold = 10000
 	}
 	if c.ESQL.IndexPatterns.Traces == "" {
-		c.ESQL.IndexPatterns.Traces = "traces-apm*"
+		c.ESQL.IndexPatterns.Traces = "traces-*.otel-*"
 	}
 	if c.ESQL.IndexPatterns.Metrics == "" {
 		c.ESQL.IndexPatterns.Metrics = "metrics-*.otel-*"

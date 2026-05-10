@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ericmustin/vern/internal/config"
+	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/mappings"
 )
 
@@ -12,6 +13,7 @@ func testCfg() *config.Config {
 	c := &config.Config{}
 	c.ESQL.Schedule = "1h"
 	c.ESQL.ResultIndex = "instrumentation-score-results"
+	c.ESQL.AnnotationsIndex = "observability-annotations"
 	return c
 }
 
@@ -54,7 +56,15 @@ func TestGenerate_TwoStepsPerRulePlusAggregation(t *testing.T) {
 		},
 	}
 
-	out, err := Generate(resolved, testCfg())
+	cov := &coverage.Summary{
+		SpecVersion:      "0.1",
+		PartialScore:     true,
+		ImplementedRules: []string{"RES-005"},
+		EnabledRules:     []string{"RES-005"},
+		MissingRules:     []string{"SDK-001"},
+	}
+
+	out, err := Generate(resolved, testCfg(), cov)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -66,6 +76,10 @@ func TestGenerate_TwoStepsPerRulePlusAggregation(t *testing.T) {
 		"type: foreach",
 		"name: index_res_005",
 		"name: calculate_scores",
+		"name: store_coverage",
+		"rule_id: _COVERAGE",
+		"partial_score: true",
+		"SDK-001",
 		"weight: 40",
 		"impact: Critical",
 		"rule_id: RES-005",
@@ -78,6 +92,32 @@ func TestGenerate_TwoStepsPerRulePlusAggregation(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing expected substring %q in output:\n%s", want, s)
 		}
+	}
+}
+
+func TestGenerate_UsesConfiguredAnnotationsIndex(t *testing.T) {
+	resolved := &mappings.ResolveResult{
+		Rules: []mappings.ResolvedMapping{{
+			RuleMapping:   mappings.RuleMapping{SpecRuleID: "RES-005", Impact: "Critical", Target: "Resource"},
+			ResolvedQuery: "FROM traces",
+		}},
+		Aggregation: &mappings.ResolvedMapping{
+			ResolvedQuery: "FROM results | WHERE NOT (rule_id IN (\"_BOOTSTRAP\", \"_TOTAL\", \"_COVERAGE\"))",
+		},
+	}
+	cfg := testCfg()
+	cfg.ESQL.AnnotationsIndex = "custom-annotations"
+
+	out, err := Generate(resolved, cfg)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "index: custom-annotations") {
+		t.Fatalf("expected configured annotations index in workflow:\n%s", s)
+	}
+	if strings.Contains(s, "index: observability-annotations") {
+		t.Fatalf("unexpected default annotations index in workflow:\n%s", s)
 	}
 }
 
