@@ -20,20 +20,49 @@ vern.yaml ───────────────────────�
 
 ## Quick start
 
-```bash
-# 1. Build
-go build -o vern .
+### Install
 
-# 2. Configure (defaults are usually fine)
+From a local checkout:
+
+```bash
+make install
+```
+
+By default this installs `vern` to `~/.local/bin/vern`. Make sure `~/.local/bin`
+is on your `PATH`, then verify:
+
+```bash
+vern --help
+```
+
+You can choose a different install location:
+
+```bash
+make install BINDIR=/usr/local/bin
+```
+
+Or use Go's standard install flow:
+
+```bash
+go install .
+```
+
+`go install .` writes the binary to `$(go env GOBIN)` if set, otherwise
+`$(go env GOPATH)/bin`; that directory must also be on your `PATH`.
+
+### Generate and sync
+
+```bash
+# 1. Configure (defaults are usually fine)
 $EDITOR vern.yaml
 
-# 3. Generate the workflow YAML
-./vern generate --output workflows.yaml
+# 2. Generate the workflow YAML
+vern generate --output workflows.yaml
 
-# 4. Sync the workflow + dashboards to Elastic Serverless
+# 3. Sync the workflow + dashboards to Elastic Serverless
 export KIBANA_URL=https://<your-project>.kb.<region>.elastic.cloud
 export KIBANA_API_KEY=<base64-api-key>
-./vern sync --replace
+vern sync --replace
 ```
 
 `vern sync --replace` deletes any prior workflow with the same name before uploading, so re-syncs are idempotent. The same `vern sync` invocation also imports the bundled Kibana saved objects (`dashboards.ndjson`) — two dashboards, two saved searches, and one data view.
@@ -49,7 +78,7 @@ Optional:
 ```bash
 # Set up an Elastic Agent Builder agent that can answer "what's the score for X?",
 # "best/worst services", "show failing rules for X with example doc ids", etc.
-./vern agent setup
+vern agent setup
 ```
 
 ## Commands
