@@ -57,6 +57,12 @@ func TestGenerate_SubstitutesIndexPattern(t *testing.T) {
 	if !strings.Contains(s, `"title":"my-custom-index*"`) {
 		t.Errorf("expected my-custom-index* in data view title")
 	}
+	if !strings.Contains(s, `FROM my-custom-index`) {
+		t.Errorf("expected Lens ES|QL to use my-custom-index")
+	}
+	if strings.Contains(s, "instrumentation-score-results") {
+		t.Errorf("expected no hardcoded default result index in custom dashboard output")
+	}
 }
 
 func TestGenerate_PreservesURLFormatterTemplate(t *testing.T) {

@@ -15,9 +15,32 @@ func testConfig() *config.Config {
 		Logs:    "logs-*.otel-*",
 	}
 	c.ESQL.TimeWindow = "1h"
+	c.ESQL.ScoreLookback = "2h"
 	c.ESQL.ResultIndex = "instrumentation-score-results"
 	c.ESQL.CardinalityThreshold = 10000
 	return c
+}
+
+func TestResolve_SubstitutesScoreLookback(t *testing.T) {
+	rules := []RuleMapping{{
+		SpecRuleID:    "_SCORE_AGGREGATION",
+		Enabled:       true,
+		IsAggregation: true,
+		Query:         "FROM {{ .ResultIndex }} | WHERE evaluated_at > NOW() - {{ .ScoreLookback }}",
+	}}
+	cfg := testConfig()
+	cfg.ESQL.ScoreLookback = "6h"
+
+	got, err := Resolve(rules, cfg)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Aggregation == nil {
+		t.Fatal("expected aggregation")
+	}
+	if !strings.Contains(got.Aggregation.ResolvedQuery, "NOW() - 6h") {
+		t.Fatalf("expected score lookback substitution, got %q", got.Aggregation.ResolvedQuery)
+	}
 }
 
 func TestResolve_SubstitutesIndices(t *testing.T) {

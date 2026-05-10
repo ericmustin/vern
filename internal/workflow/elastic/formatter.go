@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ericmustin/vern/internal/config"
+	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/mappings"
 	"gopkg.in/yaml.v3"
 )
@@ -16,12 +17,22 @@ var impactWeights = map[string]int{
 	"Low":       10,
 }
 
-func Generate(resolved *mappings.ResolveResult, cfg *config.Config) ([]byte, error) {
+func Generate(resolved *mappings.ResolveResult, cfg *config.Config, summaries ...*coverage.Summary) ([]byte, error) {
 	if resolved == nil {
 		return nil, fmt.Errorf("nil resolved mappings")
 	}
+	if cfg == nil {
+		return nil, fmt.Errorf("nil config")
+	}
 	if len(resolved.Rules) == 0 {
 		return nil, fmt.Errorf("no enabled rules to generate workflow from")
+	}
+	cfgCopy := *cfg
+	cfgCopy.ApplyDefaults()
+	cfg = &cfgCopy
+	var cov *coverage.Summary
+	if len(summaries) > 0 {
+		cov = summaries[0]
 	}
 
 	wf := Workflow{
@@ -38,6 +49,7 @@ func Generate(resolved *mappings.ResolveResult, cfg *config.Config) ([]byte, err
 	}
 
 	wf.Steps = append(wf.Steps, bootstrapStep())
+	wf.Steps = append(wf.Steps, coverageStep(cov))
 
 	for _, m := range resolved.Rules {
 		slug := ruleSlug(m.SpecRuleID)
@@ -55,7 +67,7 @@ func Generate(resolved *mappings.ResolveResult, cfg *config.Config) ([]byte, err
 			},
 		})
 		wf.Steps = append(wf.Steps, storeTotalsStep())
-		wf.Steps = append(wf.Steps, annotateStep())
+		wf.Steps = append(wf.Steps, annotateStep(cfg.ESQL.AnnotationsIndex))
 	}
 
 	out, err := yaml.Marshal(wf)
@@ -86,26 +98,70 @@ func bootstrapStep() Step {
 		With: map[string]interface{}{
 			"index": "{{ consts.result_index }}",
 			"document": map[string]interface{}{
-				"rule_id":          "_BOOTSTRAP",
-				"impact":           "Low",
-				"weight":           0,
-				"target":           "Bootstrap",
-				"description":      "Schema bootstrap row — filtered out of score aggregation.",
-				"service.name":     "_schema_init",
-				"rule_passed":      true,
-				"extent":           0.0,
-				"example":          "",
-				"evaluated_at":     "{{ 'now' | date: '%Y-%m-%dT%H:%M:%SZ' }}",
-				"score":            0.0,
-				"category":         "Bootstrap",
-				"critical_passed":  0,
-				"critical_total":   0,
-				"important_passed": 0,
-				"important_total":  0,
-				"normal_passed":    0,
-				"normal_total":     0,
-				"low_passed":       0,
-				"low_total":        0,
+				"rule_id":           "_BOOTSTRAP",
+				"impact":            "Low",
+				"weight":            0,
+				"target":            "Bootstrap",
+				"description":       "Schema bootstrap row — filtered out of score aggregation.",
+				"service.name":      "_schema_init",
+				"rule_passed":       true,
+				"extent":            0.0,
+				"example":           "",
+				"evaluated_at":      "{{ 'now' | date: '%Y-%m-%dT%H:%M:%SZ' }}",
+				"score":             0.0,
+				"category":          "Bootstrap",
+				"critical_passed":   0,
+				"critical_total":    0,
+				"important_passed":  0,
+				"important_total":   0,
+				"normal_passed":     0,
+				"normal_total":      0,
+				"low_passed":        0,
+				"low_total":         0,
+				"spec_version":      "",
+				"implemented_rules": []string{},
+				"enabled_rules":     []string{},
+				"missing_rules":     []string{},
+				"partial_score":     true,
+			},
+		},
+		OnFailure: &OnFailure{Continue: true},
+	}
+}
+
+func coverageStep(cov *coverage.Summary) Step {
+	specVersion := ""
+	implemented := []string{}
+	enabled := []string{}
+	missing := []string{}
+	partial := true
+	if cov != nil {
+		specVersion = cov.SpecVersion
+		implemented = cov.ImplementedRules
+		enabled = cov.EnabledRules
+		missing = cov.MissingRules
+		partial = cov.PartialScore
+	}
+	return Step{
+		Name: "store_coverage",
+		Type: "elasticsearch.index",
+		With: map[string]interface{}{
+			"index": "{{ consts.result_index }}",
+			"document": map[string]interface{}{
+				"rule_id":           "_COVERAGE",
+				"impact":            "_coverage",
+				"target":            "Coverage",
+				"description":       "Rule coverage metadata for this generated Vern workflow.",
+				"service.name":      "_coverage",
+				"rule_passed":       true,
+				"extent":            0.0,
+				"example":           "",
+				"evaluated_at":      "{{ 'now' | date: '%Y-%m-%dT%H:%M:%SZ' }}",
+				"spec_version":      specVersion,
+				"implemented_rules": implemented,
+				"enabled_rules":     enabled,
+				"missing_rules":     missing,
+				"partial_score":     partial,
 			},
 		},
 		OnFailure: &OnFailure{Continue: true},
@@ -161,11 +217,12 @@ func storeStep(slug string, m mappings.ResolvedMapping) Step {
 // without re-running rule queries.
 //
 // Column order from calculate_scores ESQL output:
-//   [0] service.name      [1] score          [2] category
-//   [3] critical_passed   [4] critical_total
-//   [5] important_passed  [6] important_total
-//   [7] normal_passed     [8] normal_total
-//   [9] low_passed        [10] low_total
+//
+//	[0] service.name      [1] score          [2] category
+//	[3] critical_passed   [4] critical_total
+//	[5] important_passed  [6] important_total
+//	[7] normal_passed     [8] normal_total
+//	[9] low_passed        [10] low_total
 func storeTotalsStep() Step {
 	return Step{
 		Name:    "store_totals",
@@ -201,14 +258,14 @@ func storeTotalsStep() Step {
 }
 
 // annotateStep writes one APM "deployment" annotation per service to the
-// `observability-annotations` index that Elastic APM views read from. The
+// configured annotations index that Elastic APM views read from. The
 // annotation appears as a marker on the service detail page, labeled with
 // the service's instrumentation score and category.
 //
 // Writes directly to the index (not the apm/services/{name}/annotation API)
 // so the workflow doesn't need a Kibana API key. Schema mirrors what the
 // API would produce.
-func annotateStep() Step {
+func annotateStep(index string) Step {
 	return Step{
 		Name:    "annotate_apm",
 		Type:    "foreach",
@@ -217,7 +274,7 @@ func annotateStep() Step {
 			Name: "post_annotation",
 			Type: "elasticsearch.index",
 			With: map[string]interface{}{
-				"index": "observability-annotations",
+				"index": index,
 				"document": map[string]interface{}{
 					"@timestamp": "{{ 'now' | date: '%Y-%m-%dT%H:%M:%SZ' }}",
 					"service": map[string]interface{}{

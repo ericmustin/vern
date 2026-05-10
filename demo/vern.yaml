@@ -1,0 +1,20 @@
+backend: esql
+rules_dir: ./spec/rules
+mappings: ./configs/esql-mappings.yaml
+format: elastic
+
+esql:
+  time_window: "1h"
+  score_lookback: "2h"
+  index_patterns:
+    traces: "traces-*.otel-*"
+    metrics: "metrics-*.otel-*"
+    logs: "logs-*.otel-*"
+  result_index: "instrumentation-score-results"
+  annotations_index: "observability-annotations"
+  schedule: "1h"
+  cardinality_threshold: 10000
+
+exclusions:
+  services: []
+  service_patterns: []

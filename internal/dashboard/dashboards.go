@@ -55,7 +55,7 @@ func (b *builder) overviewDashboard() SavedObject {
 
 	header := markdownPanel("md", 0, 0, 48, 4,
 		"## Vern — Instrumentation Score\n\n"+
-			"Leaderboard from the latest workflow run. **Click a service.name in the table → \"Open Service Drill-down\"** to inspect that service. "+
+			"Partial score leaderboard from the latest workflow run. **Click a service.name in the table → \"Open Service Drill-down\"** to inspect that service. "+
 			"Click any column header to sort.\n\nSpec: https://github.com/instrumentation-score/spec")
 
 	avgScore := referencedPanel("metric-avg", "lens", "Average score", 0, 4, 16, 8, nil)
@@ -95,7 +95,7 @@ func (b *builder) overviewDashboard() SavedObject {
 		Attributes: map[string]interface{}{
 			"version":     1,
 			"title":       "Vern — Instrumentation Score Overview",
-			"description": "Per-service score leaderboard. Click a service.name in the score table → Open Service Drill-down.",
+			"description": "Per-service partial score leaderboard. Click a service.name in the score table → Open Service Drill-down.",
 			"timeRestore": false,
 			"panelsJSON":  jsonString(panels),
 			"optionsJSON": jsonString(map[string]interface{}{"useMargins": true, "hidePanelTitles": false}),
@@ -145,7 +145,7 @@ func (b *builder) drilldownDashboard() SavedObject {
 
 	header := markdownPanel("md", 0, 0, 48, 4,
 		"### Service drill-down\n\n"+
-			"Pick a service in the **Service** control above. The score gauge, pass/fail pie, and per-rule breakdown table all filter together. "+
+			"Pick a service in the **Service** control above. The partial score gauge, pass/fail pie, and per-rule breakdown table all filter together. "+
 			"Click any **rule_id** in the breakdown to open the upstream spec.")
 
 	score := referencedPanel("metric-score", "lens", "Score", 0, 4, 24, 8, nil)
@@ -162,7 +162,7 @@ func (b *builder) drilldownDashboard() SavedObject {
 		Attributes: map[string]interface{}{
 			"version":           1,
 			"title":             "Vern — Service Drill-down",
-			"description":       "Select a service to see its instrumentation score and per-rule pass/fail evidence.",
+			"description":       "Select a service to see its partial instrumentation score and per-rule pass/fail evidence.",
 			"timeRestore":       false,
 			"controlGroupInput": controlGroup,
 			"panelsJSON":        jsonString(panels),

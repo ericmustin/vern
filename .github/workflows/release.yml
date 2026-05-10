@@ -1,0 +1,114 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "ldflags=-s -w -X github.com/ericmustin/vern/cmd.version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+            "windows arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch <<< "${target}"
+            name="vern_${{ steps.version.outputs.version }}_${goos}_${goarch}"
+            binary="vern"
+            if [[ "${goos}" == "windows" ]]; then
+              binary="vern.exe"
+            fi
+
+            mkdir -p "dist/${name}"
+            GOOS="${goos}" GOARCH="${goarch}" go build \
+              -trimpath \
+              -ldflags "${{ steps.version.outputs.ldflags }}" \
+              -o "dist/${name}/${binary}" .
+
+            cp README.md LICENSE "dist/${name}/"
+            if [[ "${goos}" == "windows" ]]; then
+              (cd dist && zip -qr "${name}.zip" "${name}")
+            else
+              tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+            fi
+            rm -rf "dist/${name}"
+          done
+
+          (cd dist && shasum -a 256 * > checksums.txt)
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${{ steps.version.outputs.version }}" dist/* \
+            --title "vern ${{ steps.version.outputs.version }}" \
+            --generate-notes
+
+      - name: Upload workflow artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vern-${{ steps.version.outputs.version }}
+          path: dist/*

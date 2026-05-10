@@ -1,0 +1,71 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  resource/demo:
+    attributes:
+      - key: service.name
+        value: vern-demo-logs
+        action: insert
+      - key: service.instance.id
+        value: vern-demo-instance
+        action: insert
+      - key: deployment.environment.name
+        value: production
+        action: insert
+      - key: k8s.pod.uid
+        value: vern-demo-pod-uid
+        action: insert
+      - key: k8s.pod.name
+        value: vern-demo-pod
+        action: insert
+      - key: k8s.namespace.name
+        value: vern-demo
+        action: insert
+      - key: k8s.node.name
+        value: vern-demo-node
+        action: insert
+      - key: host.id
+        value: vern-demo-host-id
+        action: insert
+      - key: host.name
+        value: vern-demo-host
+        action: insert
+      - key: container.id
+        value: vern-demo-container
+        action: insert
+      - key: service.node.name
+        value: vern-demo-node
+        action: insert
+  batch: {}
+
+exporters:
+  elasticsearch/otel:
+    endpoints: ["http://elasticsearch:9200"]
+    mapping:
+      mode: otel
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/demo, batch]
+      exporters: [elasticsearch/otel]
+    metrics:
+      receivers: [otlp]
+      processors: [resource/demo, batch]
+      exporters: [elasticsearch/otel]
+    logs:
+      receivers: [otlp]
+      processors: [resource/demo, batch]
+      exporters: [elasticsearch/otel]

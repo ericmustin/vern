@@ -74,7 +74,8 @@ rules:
     target: "Resource"
     notes: >
       Derives a logical-resource key from k8s pod uid/name, host.name,
-      container.id, and k8s.node.name. An empty key (no k8s/host/container
+      host.id, container.id, service.node.name, and k8s.node.name. An empty
+      key (no k8s/host/container/service-node
       attrs) is treated as "@@UNVERIFIABLE@@" and excluded from duplicate
       detection. A service fails if any of its instance.ids appears with
       multiple distinct logical resources. If your cluster lacks any of
@@ -88,10 +89,12 @@ rules:
       | EVAL logical_resource = CONCAT(
             COALESCE(resource.attributes.k8s.pod.uid, ""), "|",
             COALESCE(resource.attributes.k8s.pod.name, ""), "|",
+            COALESCE(resource.attributes.host.id, ""), "|",
             COALESCE(resource.attributes.host.name, ""), "|",
             COALESCE(resource.attributes.container.id, ""), "|",
+            COALESCE(resource.attributes.service.node.name, ""), "|",
             COALESCE(resource.attributes.k8s.node.name, ""))
-      | EVAL logical_resource = CASE(logical_resource == "||||", "@@UNVERIFIABLE@@", logical_resource)
+      | EVAL logical_resource = CASE(logical_resource == "||||||", "@@UNVERIFIABLE@@", logical_resource)
       | STATS distinct_resources = COUNT_DISTINCT(logical_resource),
               has_unverifiable = MAX(CASE(logical_resource == "@@UNVERIFIABLE@@", 1, 0))
               BY resource.attributes.service.name, instance_id = resource.attributes.service.instance.id
@@ -194,6 +197,7 @@ rules:
 
   - spec_rule_id: "SPA-003"
     enabled: true
+    status: "heuristic"
     description: "Span names have bound cardinality"
     impact: "Important"
     target: "TraceSpan"
@@ -242,17 +246,16 @@ rules:
 
   - spec_rule_id: "SPA-005"
     enabled: true
-    description: "Traces do not contain a high number of short INTERNAL spans"
+    description: "Traces do not contain a high number of short duration spans"
     impact: "Important"
     target: "TraceSpan"
     notes: >
-      Per the spec rationale, SPA-005 specifically targets INTERNAL spans
-      (excessive instrumentation overhead). A trace fails if it has more
-      than 20 short INTERNAL spans. duration is in nanoseconds; 5ms = 5e6 ns.
+      Conservative implementation of the spec criteria: a trace fails if it
+      has more than 20 spans of any kind under 5ms. duration is in nanoseconds;
+      5ms = 5e6 ns.
     query: |
       FROM {{ .Indices.Traces }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}
-          AND kind IN ("Internal", "SPAN_KIND_INTERNAL")
           AND duration IS NOT NULL
       | EVAL is_short = duration < 5000000
       | STATS short_count = COUNT(*) WHERE is_short BY trace_id, resource.attributes.service.name
@@ -302,7 +305,11 @@ rules:
     query: |
       FROM {{ .Indices.Logs }} METADATA _id
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}
-      | EVAL no_sev = severity_number IS NULL OR severity_number == 0
+      | EVAL no_sev = severity_text IS NULL
+          OR severity_text == ""
+          OR TO_UPPER(severity_text) == "UNSET"
+          OR severity_number IS NULL
+          OR severity_number == 0
       | STATS
           logs_wo_severity = COUNT(*) WHERE no_sev,
           example = SAMPLE(_id, 1) WHERE no_sev,
@@ -351,14 +358,14 @@ rules:
     description: "Calculate the final instrumentation score per service"
     notes: >
       Aggregates per-service rule results written by store_* steps over
-      the last 2 hours (excluding the bootstrap placeholder row). Score
+      the configured score lookback (excluding bootstrap and coverage rows). Score
       formula matches the spec:
       Σ(P_i * W_i) / Σ(T_i * W_i) * 100, weights
       Critical=40, Important=30, Normal=20, Low=10.
     query: |
       FROM {{ .ResultIndex }}
-      | WHERE evaluated_at > NOW() - 2h
-          AND NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL"))
+      | WHERE evaluated_at > NOW() - {{ .ScoreLookback }}
+          AND NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL", "_COVERAGE"))
           AND service.name != "_schema_init"
       | STATS
           critical_passed = SUM(CASE(impact == "Critical" AND rule_passed == true, 1, 0)),

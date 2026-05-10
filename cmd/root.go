@@ -10,9 +10,11 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "vern",
-	Short:   "Vern — generate Elastic Workflows YAML for OpenTelemetry instrumentation scoring",
-	Version: version,
+	Use:           "vern",
+	Short:         "Vern — generate Elastic Workflows YAML for OpenTelemetry instrumentation scoring",
+	Version:       version,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	Long: `Vern is a vendor-agnostic CLI that maps Instrumentation Score spec rules to
 ES|QL queries and emits an Elastic Workflows YAML that runs them on a schedule
 in an Elastic Serverless project.`,
@@ -27,4 +29,6 @@ func init() {
 	rootCmd.AddCommand(generateCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(agentCmd)
+	rootCmd.AddCommand(reviewCmd)
+	rootCmd.AddCommand(setupCmd)
 }

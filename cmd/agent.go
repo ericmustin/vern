@@ -6,6 +6,9 @@ import (
 	"os"
 
 	"github.com/ericmustin/vern/internal/agent"
+	"github.com/ericmustin/vern/internal/config"
+	"github.com/ericmustin/vern/internal/coverage"
+	"github.com/ericmustin/vern/internal/mappings"
 	"github.com/ericmustin/vern/internal/sync"
 	"github.com/spf13/cobra"
 )
@@ -13,13 +16,14 @@ import (
 var (
 	agentKibanaURL string
 	agentAPIKey    string
+	agentMappings  string
 )
 
 var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Manage the Vern Agent Builder agent in Kibana",
 	Long: `Vern can ship an optional Elastic Agent Builder agent that knows the
-instrumentation-score-results schema and how to query it. Use it to ask
+configured Vern result-index schema and how to query it. Use it to ask
 "what's the score for service X?", "show me failing rules for X", or
 "best/worst services" in conversational form, with citations to the
 upstream spec.`,
@@ -47,10 +51,28 @@ var agentSetupCmd = &cobra.Command{
 			return fmt.Errorf("missing --api-key or KIBANA_API_KEY env var")
 		}
 
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		mappingsPath := agentMappings
+		if mappingsPath == "" {
+			mappingsPath = cfg.Mappings
+		}
+		mf, err := mappings.Load(mappingsPath)
+		if err != nil {
+			return err
+		}
+		specRules, err := coverage.LoadSpecRules(cfg.RulesDir)
+		if err != nil {
+			return err
+		}
+		cov := coverage.Build(specRules, mf)
+
 		client := sync.NewClient(kibanaURL, apiKey)
 
 		// 1) Upsert the governance skill first — the agent references it.
-		s := agent.BuildSkill()
+		s := agent.BuildSkill(agent.Context{Config: cfg, Coverage: &cov})
 		skillNoID, err := json.Marshal(struct {
 			Name        string   `json:"name"`
 			Description string   `json:"description"`
@@ -105,4 +127,5 @@ func init() {
 	agentCmd.AddCommand(agentSetupCmd)
 	agentCmd.PersistentFlags().StringVar(&agentKibanaURL, "kibana-url", "", "Kibana base URL (env: KIBANA_URL)")
 	agentCmd.PersistentFlags().StringVar(&agentAPIKey, "api-key", "", "Kibana API key (env: KIBANA_API_KEY)")
+	agentCmd.PersistentFlags().StringVar(&agentMappings, "mappings", "", "path to ES|QL mappings file (defaults to config.mappings)")
 }

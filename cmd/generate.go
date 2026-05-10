@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ericmustin/vern/internal/config"
+	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/dashboard"
 	"github.com/ericmustin/vern/internal/mappings"
 	"github.com/ericmustin/vern/internal/workflow/elastic"
@@ -38,12 +39,18 @@ var generateCmd = &cobra.Command{
 			return err
 		}
 
+		specRules, err := coverage.LoadSpecRules(cfg.RulesDir)
+		if err != nil {
+			return err
+		}
+		cov := coverage.Build(specRules, mf)
+
 		resolved, err := mappings.Resolve(mf.Rules, cfg)
 		if err != nil {
 			return err
 		}
 
-		out, err := elastic.Generate(resolved, cfg)
+		out, err := elastic.Generate(resolved, cfg, &cov)
 		if err != nil {
 			return err
 		}
@@ -69,7 +76,7 @@ var generateCmd = &cobra.Command{
 		if dashboardsPath == "" {
 			dashboardsPath = defaultDashboardsPath(generateOutput)
 		}
-		ndjson, err := dashboard.Generate(cfg)
+		ndjson, err := dashboard.Generate(cfg, &cov)
 		if err != nil {
 			return fmt.Errorf("generate dashboards: %w", err)
 		}

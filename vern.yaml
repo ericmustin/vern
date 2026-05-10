@@ -5,8 +5,8 @@
 # Which backend to target for query generation
 backend: esql
 
-# Path to vendored spec rules (YAML files from instrumentation-score/spec/rules/)
-rules_dir: ./configs/spec-rules
+# Path to vendored upstream spec rule markdown files
+rules_dir: ./spec/rules
 
 # Path to backend-specific query mappings
 mappings: ./configs/esql-mappings.yaml
@@ -21,6 +21,10 @@ esql:
   # window (e.g. 7d, 30d) when demoing against stale data.
   time_window: "30d"
 
+  # Lookback window used by the final score aggregation over Vern's result index.
+  # Keep this longer than the workflow's expected runtime and schedule interval.
+  score_lookback: "2h"
+
   # Elasticsearch index patterns for OTel data.
   # Defaults match Elastic Serverless OTLP ingestion (data streams created
   # automatically when sending via the project's OTLP endpoint). If you ingest
@@ -32,6 +36,9 @@ esql:
 
   # Where to store rule evaluation results
   result_index: "instrumentation-score-results"
+
+  # Where to write APM annotation documents
+  annotations_index: "observability-annotations"
 
   # Schedule interval for the generated workflow (default: hourly)
   # Uses Elastic Workflows interval format: "5m", "15m", "30m", "1h", "6h", "12h", "1d"

@@ -13,7 +13,9 @@ import (
 type TemplateData struct {
 	Indices              config.IndexPatterns
 	TimeWindow           string
+	ScoreLookback        string
 	ResultIndex          string
+	AnnotationsIndex     string
 	CardinalityThreshold int
 }
 
@@ -32,7 +34,9 @@ func Resolve(rules []RuleMapping, cfg *config.Config) (*ResolveResult, error) {
 	data := TemplateData{
 		Indices:              cfg.ESQL.IndexPatterns,
 		TimeWindow:           cfg.ESQL.TimeWindow,
+		ScoreLookback:        cfg.ESQL.ScoreLookback,
 		ResultIndex:          cfg.ESQL.ResultIndex,
+		AnnotationsIndex:     cfg.ESQL.AnnotationsIndex,
 		CardinalityThreshold: cfg.ESQL.CardinalityThreshold,
 	}
 
