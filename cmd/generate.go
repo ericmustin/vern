@@ -58,6 +58,7 @@ var generateCmd = &cobra.Command{
 			SemconvLogOnlyKeys:      semconv.QuotedCSV(semconv.LogOnlyKeys),
 			SemconvMetricOnlyKeys:   semconv.QuotedCSV(semconv.MetricOnlyKeys),
 			MET001AttrKeys:          semconv.MET001AttrAllowlist(),
+			MET006SemconvKeys:       semconv.QuotedCSV(semconv.MET006CuratedKeys()),
 			SDKSupportMatrix:        sdksupport.RenderESQLCase("resource.attributes.telemetry.sdk.language", "resource.attributes.telemetry.sdk.version"),
 		})
 		if err != nil {

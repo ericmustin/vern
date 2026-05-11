@@ -18,6 +18,8 @@ import (
 	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/dashboard"
 	"github.com/ericmustin/vern/internal/mappings"
+	"github.com/ericmustin/vern/internal/sdksupport"
+	"github.com/ericmustin/vern/internal/semconv"
 	"github.com/ericmustin/vern/internal/workflow/elastic"
 )
 
@@ -116,7 +118,16 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	report.Coverage = coverage.Build(specRules, mf)
 	report.compareMappingsToSpec(specRules, mf.Rules)
 
-	resolved, err := mappings.Resolve(mf.Rules, cfg)
+	resolved, err := mappings.ResolveWithData(mf.Rules, cfg, mappings.TemplateData{
+		SemconvAttributeKeys:    semconv.QuotedCSV(semconv.AttributeKeys),
+		SemconvResourceOnlyKeys: semconv.QuotedCSV(semconv.ResourceOnlyKeys),
+		SemconvSpanOnlyKeys:     semconv.QuotedCSV(semconv.SpanOnlyKeys),
+		SemconvLogOnlyKeys:      semconv.QuotedCSV(semconv.LogOnlyKeys),
+		SemconvMetricOnlyKeys:   semconv.QuotedCSV(semconv.MetricOnlyKeys),
+		MET001AttrKeys:          semconv.MET001AttrAllowlist(),
+		MET006SemconvKeys:       semconv.QuotedCSV(semconv.MET006CuratedKeys()),
+		SDKSupportMatrix:        sdksupport.RenderESQLCase("resource.attributes.telemetry.sdk.language", "resource.attributes.telemetry.sdk.version"),
+	})
 	if err != nil {
 		report.addError("resolve", err.Error())
 		return finalize(report, opts), nil
@@ -220,6 +231,10 @@ func (r *Report) addArtifact(name string, passed bool, detail string) {
 
 func validateLiveESQL(ctx context.Context, base string, rules []mappings.ResolvedMapping) []LiveCheck {
 	base = strings.TrimRight(base, "/")
+	apiKey := os.Getenv("ELASTIC_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("KIBANA_API_KEY")
+	}
 	client := &http.Client{Timeout: 20 * time.Second}
 	var checks []LiveCheck
 	for _, rule := range rules {
@@ -235,6 +250,9 @@ func validateLiveESQL(ctx context.Context, base string, rules []mappings.Resolve
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("Authorization", "ApiKey "+apiKey)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			check.Detail = err.Error()

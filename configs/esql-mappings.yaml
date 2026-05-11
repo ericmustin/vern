@@ -140,53 +140,26 @@ rules:
     impact: "Important"
     target: "Resource, Log, Span"
     notes: >
-      The full semconv attribute registry has ~800 entries; checking every
-      key as a column reference would produce an unmanageable query. This
-      mapping checks the high-confidence subset that the spec itself uses
-      as exemplars: identity attributes (service.*, host.*, k8s.*) must be
-      at resource level only, and inherently per-span attributes (http.*,
-      db.*, rpc.*, messaging.*) must NOT appear at resource level. False
-      negatives are expected for the long tail; widen the lists below as
-      operational findings demand. Catalog source:
-      internal/semconv/placement.go (`vern semconv sync`).
+      ES|QL is schema-strict: referencing a column that no document has ever
+      populated in the index mapping is a plan-time verification error, not a
+      runtime "0 rows" result. So a maximalist RES-004 check (every semconv
+      key at every level) fails to plan against most clusters. This narrow
+      tripwire query checks the single highest-signal misplacement we can
+      portably express: `service.version` appearing as a span attribute
+      rather than a resource attribute. The semconv catalog at
+      internal/semconv/placement.go is still generated for future use, but
+      consuming it dynamically requires per-index schema introspection that
+      Vern does not yet do. Widen the EVAL list below if you have confirmed
+      additional misplacements your environment.
     query: |
       FROM {{ .Indices.Traces }} METADATA _id
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND resource.attributes.service.name IS NOT NULL
-      | EVAL
-          resource_only_on_span =
-            attributes.service.name IS NOT NULL
-            OR attributes.service.namespace IS NOT NULL
-            OR attributes.service.instance.id IS NOT NULL
-            OR attributes.service.version IS NOT NULL
-            OR attributes.host.name IS NOT NULL
-            OR attributes.host.id IS NOT NULL
-            OR attributes.k8s.pod.uid IS NOT NULL
-            OR attributes.k8s.pod.name IS NOT NULL
-            OR attributes.k8s.namespace.name IS NOT NULL
-            OR attributes.k8s.node.name IS NOT NULL
-            OR attributes.container.id IS NOT NULL
-            OR attributes.deployment.environment.name IS NOT NULL
-            OR attributes.telemetry.sdk.language IS NOT NULL
-            OR attributes.telemetry.sdk.version IS NOT NULL,
-          span_only_on_resource =
-            resource.attributes.http.request.method IS NOT NULL
-            OR resource.attributes.http.response.status_code IS NOT NULL
-            OR resource.attributes.http.route IS NOT NULL
-            OR resource.attributes.db.system.name IS NOT NULL
-            OR resource.attributes.db.query.text IS NOT NULL
-            OR resource.attributes.db.collection.name IS NOT NULL
-            OR resource.attributes.rpc.method IS NOT NULL
-            OR resource.attributes.rpc.system IS NOT NULL
-            OR resource.attributes.messaging.system IS NOT NULL
-            OR resource.attributes.messaging.destination.name IS NOT NULL
-            OR resource.attributes.url.path IS NOT NULL
-            OR resource.attributes.url.full IS NOT NULL
-      | EVAL misplaced = resource_only_on_span OR span_only_on_resource
+      | EVAL misplaced = attributes.service.version IS NOT NULL
       | STATS
-          failed = COUNT(*) WHERE misplaced,
+          failed = COUNT(_id) WHERE misplaced,
           example = SAMPLE(_id, 1) WHERE misplaced,
-          total = COUNT(*)
+          total = COUNT(_id)
             BY resource.attributes.service.name
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
@@ -379,17 +352,14 @@ rules:
 
   # ─── Metric Rules ─────────────────────────────────────────────
   #
-  # Schema assumptions for OTel-native metrics in Elastic Serverless (mapping
-  # mode: otel):
-  #   - `TS <metrics-index>` plus `TS_INFO` returns one row per unique time
-  #     series, with columns including `metric_name`, `unit`, and the metric's
-  #     dimension fields flattened (so resource.attributes.service.name is
-  #     queryable when service.name is part of the metric's dimension set —
-  #     which is the case for native OTel ingest).
-  #   - `attributes.<key>` carries per-data-point attributes on metric docs.
-  #   - The unit field follows UCUM; empty unit or "1" is treated as
-  #     dimensionless / no useful unit.
-  # If your ingest uses a different mapping mode, edit the field paths below.
+  # Schema assumptions for OTel-native metrics in Elastic Serverless:
+  #   - `TS <metrics-index> | TS_INFO` returns one row per unique time series
+  #     with columns {metric_name, data_stream, unit, metric_type, field_type,
+  #     dimension_fields (mv), dimensions (json-string)}.
+  #   - TS_INFO drops top-level columns (e.g. resource.attributes.service.name).
+  #     The dimension values live inside the `dimensions` JSON blob, so we
+  #     extract service.name with GROK.
+  #   - `TS` does not support COUNT(*); aggregations must reference a field.
   # MET-004 (histogram bucket consistency) stays disabled because histogram
   # bucket boundaries are not exposed via TS_INFO / METRICS_INFO as of 9.4.
 
@@ -399,36 +369,31 @@ rules:
     impact: "Important"
     target: "Metric"
     notes: >
-      Spec requires cardinality per metric name and attribute key within a
-      1-hour window. ES|QL cannot dynamically iterate every discovered
-      attribute, so Vern checks a curated allowlist of high-cardinality-risk
-      semconv attribute keys (see internal/semconv/met001_allowlist.go).
-      A (metric_name, service) pair is flagged when ANY of the allowlisted
-      attributes exceeds the configured cardinality_threshold within the
-      past hour. Each COUNT_DISTINCT operates on its own attribute column,
-      so per-attribute cardinality is preserved (no COALESCE conflation).
+      The spec requires cardinality per (metric name, attribute key) within
+      a 1-hour window. ES|QL's TS_INFO returns one row per unique time series
+      (i.e. one row per unique combination of metric_name + all dimension
+      values), so COUNT(metric_name) BY metric_name, service is a tight upper
+      bound on per-metric attribute cardinality — when the series count
+      exceeds the threshold, at least one attribute key MUST be over the
+      threshold too. This is more conservative than the spec but cheaper to
+      evaluate than enumerating per-attribute COUNT_DISTINCT, and it doesn't
+      depend on an attribute allowlist.
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - 1h{{ .ScopeFilter }}
-          AND resource.attributes.service.name IS NOT NULL
+      | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | STATS series_count = COUNT(metric_name) BY metric_name, svc
+      | EVAL over_threshold = series_count > {{ .CardinalityThreshold }}
       | STATS
-          {{- range $i, $k := .MET001AttrKeys }}
-          card_{{ $i }} = COUNT_DISTINCT(attributes.{{ $k }}),
-          {{- end }}
-          total_rows = COUNT(*)
-            BY metric_name, resource.attributes.service.name
-      | EVAL over_threshold =
-          {{- range $i, $k := .MET001AttrKeys }}
-          {{- if $i }} OR {{ end }} card_{{ $i }} > {{ $.CardinalityThreshold }}
-          {{- end }}
-      | STATS
-          failed = COUNT(*) WHERE over_threshold,
+          failed = COUNT(metric_name) WHERE over_threshold,
           example = SAMPLE(metric_name, 1) WHERE over_threshold,
-          total = COUNT(*)
-            BY resource.attributes.service.name
+          total = COUNT(metric_name)
+            BY svc
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
-      | RENAME resource.attributes.service.name AS service.name
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-002"
@@ -443,17 +408,18 @@ rules:
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
-          AND resource.attributes.service.name IS NOT NULL
       | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
       | EVAL missing_unit = unit IS NULL OR unit == "" OR unit == "1"
       | STATS
-          failed = COUNT(*) WHERE missing_unit,
+          failed = COUNT(metric_name) WHERE missing_unit,
           example = SAMPLE(metric_name, 1) WHERE missing_unit,
-          total = COUNT(*)
-            BY resource.attributes.service.name
+          total = COUNT(metric_name)
+            BY svc
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
-      | RENAME resource.attributes.service.name AS service.name
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-003"
@@ -469,19 +435,19 @@ rules:
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - 14d{{ .ScopeFilter }}
-          AND resource.attributes.service.name IS NOT NULL
       | TS_INFO
-      | STATS unit_count = COUNT_DISTINCT(unit)
-            BY metric_name, resource.attributes.service.name
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | STATS unit_count = COUNT_DISTINCT(unit) BY metric_name, svc
       | EVAL inconsistent = unit_count > 1
       | STATS
-          failed = COUNT(*) WHERE inconsistent,
+          failed = COUNT(metric_name) WHERE inconsistent,
           example = SAMPLE(metric_name, 1) WHERE inconsistent,
-          total = COUNT(*)
-            BY resource.attributes.service.name
+          total = COUNT(metric_name)
+            BY svc
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
-      | RENAME resource.attributes.service.name AS service.name
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-004"
@@ -511,23 +477,25 @@ rules:
       Common violations: metrics named `*.seconds`, `*.bytes`, `*.percent`
       when the unit is `s`, `By`, `%`. The check is case-insensitive on the
       metric name and uses a fixed regex set so we don't depend on the unit
-      field for the match (only for the name pattern).
+      field for the match (only for the name pattern). RLIKE is the ES|QL
+      regex operator (infix), not a function — `col RLIKE "..."` is the
+      correct form.
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
-          AND resource.attributes.service.name IS NOT NULL
       | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
       | EVAL lower_name = TO_LOWER(metric_name),
-          contains_unit_word = RLIKE(lower_name,
-            ".*(\\.|_)(seconds?|milliseconds?|microseconds?|nanoseconds?|bytes?|kilobytes?|megabytes?|gigabytes?|percent(age)?)$")
+          contains_unit_word = lower_name RLIKE ".*[._](seconds?|milliseconds?|microseconds?|nanoseconds?|bytes?|kilobytes?|megabytes?|gigabytes?|percent(age)?)$"
       | STATS
-          failed = COUNT(*) WHERE contains_unit_word,
+          failed = COUNT(metric_name) WHERE contains_unit_word,
           example = SAMPLE(metric_name, 1) WHERE contains_unit_word,
-          total = COUNT(*)
-            BY resource.attributes.service.name
+          total = COUNT(metric_name)
+            BY svc
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
-      | RENAME resource.attributes.service.name AS service.name
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-006"
@@ -537,23 +505,27 @@ rules:
     target: "Metric"
     notes: >
       Vern's vendored semantic-convention catalog (internal/semconv,
-      regenerated via `vern semconv sync`) defines the canonical attribute
-      key set; a metric whose name exactly equals one of those keys is a
-      violation per the spec.
+      regenerated via `vern semconv sync`) has ~800 attribute keys, which
+      blows past the ES|QL parser's practical limit on `IN (...)` list
+      length. MET-006 uses a curated subset (see
+      internal/semconv/met006_keys.go) of the most-likely-to-be-misused
+      keys: identity attrs (service/host/k8s), HTTP/DB/RPC/messaging, plus
+      common dimension keys. Edit MET006CuratedKeys to widen.
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
-          AND resource.attributes.service.name IS NOT NULL
       | TS_INFO
-      | EVAL is_semconv_key = metric_name IN ({{ .SemconvAttributeKeys }})
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | EVAL is_semconv_key = metric_name IN ({{ .MET006SemconvKeys }})
       | STATS
-          failed = COUNT(*) WHERE is_semconv_key,
+          failed = COUNT(metric_name) WHERE is_semconv_key,
           example = SAMPLE(metric_name, 1) WHERE is_semconv_key,
-          total = COUNT(*)
-            BY resource.attributes.service.name
+          total = COUNT(metric_name)
+            BY svc
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
-      | RENAME resource.attributes.service.name AS service.name
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   # ─── SDK Rules ────────────────────────────────────────────────

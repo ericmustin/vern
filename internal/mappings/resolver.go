@@ -40,6 +40,11 @@ type TemplateData struct {
 	// to evaluate against the per-metric cardinality threshold.
 	MET001AttrKeys []string
 
+	// MET006SemconvKeys is the curated quoted-CSV subset of semconv attribute
+	// keys used by MET-006's IN-list check. The full registry is too large
+	// for ES|QL's IN operator parser.
+	MET006SemconvKeys string
+
 	// SDKSupportMatrix is rendered ES|QL CASE-ladder text consumed by SDK-001.
 	SDKSupportMatrix string
 }
@@ -81,6 +86,9 @@ func ResolveWithData(rules []RuleMapping, cfg *config.Config, override TemplateD
 	}
 	if len(override.MET001AttrKeys) > 0 {
 		data.MET001AttrKeys = override.MET001AttrKeys
+	}
+	if override.MET006SemconvKeys != "" {
+		data.MET006SemconvKeys = override.MET006SemconvKeys
 	}
 	if override.SDKSupportMatrix != "" {
 		data.SDKSupportMatrix = override.SDKSupportMatrix
