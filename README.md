@@ -5,12 +5,8 @@ to Elastic Serverless.
 
 It reads the vendored [Instrumentation Score spec](https://github.com/instrumentation-score/spec),
 maps implemented rules to ES|QL, generates an Elastic Workflow, imports Kibana
-dashboards, and can set up an Agent Builder assistant that knows how to query
-the generated score data.
-
-Vern currently emits a **partial Instrumentation Score**: implemented and
-enabled rules are scored, while missing, disabled, and heuristic rules are
-reported as coverage metadata.
+dashboards, and sets up an Agent Builder assistant that knows how to query the
+score data.
 
 ```text
 spec/rules/*.md + configs/esql-mappings.yaml + vern.yaml
@@ -20,198 +16,122 @@ spec/rules/*.md + configs/esql-mappings.yaml + vern.yaml
   -> per-service partial score (0-100)
 ```
 
-## Install
-
-From this checkout:
-
-```bash
-make install
-vern --help
-```
-
-By default this installs to `~/.local/bin/vern`. You can choose another target:
-
-```bash
-make install BINDIR=/usr/local/bin
-```
-
-Or use Go directly:
-
-```bash
-go install .
-```
-
-Make sure `$(go env GOBIN)` or `$(go env GOPATH)/bin` is on your `PATH`.
+Vern emits a **partial Instrumentation Score**: enabled rules are scored,
+disabled and heuristic rules are reported as coverage metadata.
 
 ## Quick Start
 
-Set your Kibana URL and API key, then run the full setup flow:
-
 ```bash
+make install                                                # → ~/.local/bin/vern
 export KIBANA_URL=https://<your-project>.kb.<region>.elastic.cloud
 export KIBANA_API_KEY=<base64-api-key>
-
 vern setup --replace
 ```
 
-`vern setup` runs:
+`vern setup` reviews coverage, generates `workflows.yaml`/`dashboards.ndjson`/
+`agent-skill.md`, uploads the workflow, imports dashboards, and registers the
+Agent Builder skill + agent. Add `--dry-run` to preview without changing
+anything.
 
-1. Review config and rule coverage
-2. Generate `workflows.yaml`, `dashboards.ndjson`, and `agent-skill.md`
-3. Upload or replace the Elastic Workflow
-4. Import Kibana dashboards
-5. Create or update the Agent Builder skill and agent
-6. Print links to the generated Kibana assets
+## What Vern Creates in Kibana
 
-It finishes with links to Workflows, the overview dashboard, the drill-down
-dashboard, and Agent Builder.
+### Overview dashboard
 
-`agent-skill.md` is the exact generated markdown sent to Agent Builder. Review
-that file when you want to inspect the assistant instructions without opening
-Kibana.
+Service score leaderboard, average score across services, pass/fail pie, and a
+latest-rule-evidence table. Click `service.name` → "Open Service Drill-down".
 
-Preview the flow without writing files or changing Kibana:
+![Overview dashboard](docs/images/overview_example.png)
 
-```bash
-vern setup --dry-run --kibana-url https://<your-project>.kb.<region>.elastic.cloud
-```
+### Drill-down dashboard
 
-## Commands
+Per-service score gauge, pass/fail pie, and the full per-rule breakdown with
+links back to the spec rule and the underlying signal documents.
 
-### `vern setup`
+![Drill-down dashboard](docs/images/drilldown_example.png)
 
-Full setup: review, generate, sync, dashboard import, and Agent Builder setup.
+### Elastic Workflow
 
-| Flag | Default | Description |
-|---|---|---|
-| `--config` | `vern.yaml` | Config file |
-| `--mappings` | from config | ES\|QL mappings file |
-| `--workflow`, `-w` | `workflows.yaml` | Workflow YAML output |
-| `--dashboards` | next to workflow | Dashboard NDJSON output |
-| `--agent-skill` | next to workflow | Agent Builder skill markdown output |
-| `--kibana-url` | `$KIBANA_URL` | Kibana base URL |
-| `--api-key` | `$KIBANA_API_KEY` | Kibana API key |
-| `--replace` | `false` | Replace existing workflow with the same name |
-| `--dry-run` | `false` | Print planned steps only |
-| `--skip-dashboards` | `false` | Skip dashboard write/import |
-| `--skip-agent` | `false` | Skip Agent Builder setup |
-| `--strict-coverage` | `false` | Fail when score coverage is partial |
+One Workflow named "Instrumentation Score Evaluation" runs on the configured
+schedule. Each rule becomes an `elasticsearch.esql.query` step plus a
+`foreach` indexer that writes results to `instrumentation-score-results`.
 
-### `vern review`
+![Workflow YAML view](docs/images/workflow_example.png)
 
-Checks reproducibility and coverage. Use this before publishing changes.
+Execution view shows each per-rule eval/store pair with timings and output
+documents.
 
-```bash
-vern review
-vern review --format json
-vern review --strict-coverage
-vern review --live-es-url http://localhost:9200
-```
+![Workflow execution](docs/images/workflow_example_two.png)
 
-`--live-es-url` executes rendered rule ES|QL against Elasticsearch. This is
-intended for local/demo validation.
+### Agent Builder skill & agent
 
-### `vern generate`
+The skill (`vern-instrumentation-score-governance`) embeds the result-document
+schema, signal index patterns, and rule status so the agent can answer
+governance questions without rediscovering structure each turn.
 
-Generates workflow and dashboard artifacts without uploading them.
+![Agent Builder skill](docs/images/skill_example.png)
 
-```bash
-vern generate --output workflows.yaml
-```
+The agent ranks services, surfaces the most common failing rule, and links
+back to the spec.
 
-| Flag | Default | Description |
-|---|---|---|
-| `--config` | `vern.yaml` | Config file |
-| `--mappings` | from config | ES\|QL mappings file |
-| `--output`, `-o` | `workflows.yaml` | Workflow YAML output |
-| `--dashboards` | next to output | Dashboard NDJSON output |
-| `--agent-skill` | next to output | Agent Builder skill markdown output |
+![Agent example](docs/images/agent_example.png)
 
-### `vern sync`
+### APM annotation
 
-Uploads an existing workflow YAML and imports dashboard saved objects.
+Each workflow run writes a Kibana annotation tagged `Version: Vern` carrying
+the latest score. It shows up on APM service overview charts as a hover
+marker.
 
-```bash
-vern sync --replace
-```
+![APM annotation](docs/images/annotation_example.png)
 
-| Flag | Default | Description |
-|---|---|---|
-| `--workflow`, `-w` | `workflows.yaml` | Workflow YAML path |
-| `--dashboards` | `dashboards.ndjson` | Dashboard NDJSON path |
-| `--kibana-url` | `$KIBANA_URL` | Kibana base URL |
-| `--api-key` | `$KIBANA_API_KEY` | Kibana API key |
-| `--replace` | `false` | Replace existing workflow with the same name |
-| `--skip-dashboards` | `false` | Skip dashboard import |
-| `--dry-run` | `false` | Validate without uploading |
+## Rule Coverage
 
-### `vern spec sync` / `vern spec status`
+| Rule | Target | Impact | Status | Notes |
+|---|---|---|---|---|
+| `RES-001` | Resource | Normal | Enabled | `service.instance.id` is present |
+| `RES-002` | Resource | Important | Enabled | `service.instance.id` is unique across logical resources |
+| `RES-003` | Resource | Important | Enabled | `k8s.pod.uid` is present for Kubernetes telemetry |
+| `RES-004` | Resource, Log, Span | Important | Enabled | Narrow tripwire for misplaced `service.version` (ES\|QL schema-strict; widen per environment) |
+| `RES-005` | Resource | Critical | Enabled | `service.name` is present |
+| `SPA-001` | Span | Normal | Enabled | Limited number of `INTERNAL` spans per service |
+| `SPA-002` | Span | Normal | Enabled | Parent span ids exist in the same trace |
+| `SPA-003` | Span | Important | Heuristic | Span-name cardinality; upstream criteria is TODO |
+| `SPA-004` | Span | Important | Enabled | Root spans are not `CLIENT` spans |
+| `SPA-005` | Span | Important | Enabled | Traces do not contain many short-duration spans |
+| `LOG-001` | Log | Important | Enabled | Debug logs not enabled in production > 14 days |
+| `LOG-002` | Log | Important | Enabled | Log records have severity set |
+| `MET-001` | Metric | Important | Enabled | Per-(metric, service) time-series count vs cardinality threshold |
+| `MET-002` | Metric | Important | Enabled | Useful units (not NULL / empty / `1`) |
+| `MET-003` | Metric | Important | Enabled | Unit consistency across the same metric name |
+| `MET-004` | Metric | Normal | Disabled | Histogram bucket boundaries not exposed by `TS_INFO`/`METRICS_INFO` |
+| `MET-005` | Metric | Normal | Enabled | Metric names don't contain a unit suffix |
+| `MET-006` | Metric | Important | Enabled | Metric names don't equal a semconv attribute key |
+| `SDK-001` | SDK | Low | Opt-in | Enable via `filters.enable_sdk_rules`; depends on vendored support matrix |
 
-Compares the locally vendored Instrumentation Score spec under `./spec/` with
-upstream at the pinned ref (`spec.upstream_ref` in `vern.yaml`). `status` is
-read-only; `sync --apply` overwrites local files and updates `./spec/VERSION`.
-
-```bash
-vern spec status
-vern spec sync --apply
-```
-
-### `vern semconv sync`
-
-Fetches the upstream OpenTelemetry semantic conventions at the pinned ref
-(`semconv.upstream_ref` in `vern.yaml`) and regenerates
-`internal/semconv/attribute_keys.go` and `placement.go`. The committed
-catalog powers MET-006 (metric name collisions with semconv keys) and
-RES-004 (semconv attribute placement).
-
-```bash
-vern semconv sync           # dry run — prints catalog summary
-vern semconv sync --apply   # regenerate Go files + VERSION
-```
-
-### `vern agent setup`
-
-Creates or updates the Agent Builder skill and agent only.
-
-```bash
-vern agent setup
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `--kibana-url` | `$KIBANA_URL` | Kibana base URL |
-| `--api-key` | `$KIBANA_API_KEY` | Kibana API key |
-| `--mappings` | from config | ES\|QL mappings file used for coverage content |
+**17 enabled · 1 heuristic · 1 disabled · 1 opt-in · 0 missing.**
 
 ## Config
 
-Default config lives in `vern.yaml`.
+Default config lives in `vern.yaml`. Key knobs:
 
 ```yaml
 backend: esql
 rules_dir: ./spec/rules
 mappings: ./configs/esql-mappings.yaml
-format: elastic
 
 esql:
   time_window: "30d"
-  score_lookback: "2h"
   index_patterns:
     traces: "traces-*.otel-*"
     metrics: "metrics-*.otel-*"
     logs: "logs-*.otel-*"
   result_index: "instrumentation-score-results"
-  annotations_index: "observability-annotations"
   schedule: "1h"
   cardinality_threshold: 10000
 
 filters:
-  # Restrict evaluation to specific deployment environments (case-insensitive).
-  environments: []
-  # Restrict evaluation to specific service namespaces.
+  environments: []          # e.g. ["prod"] — appended as AND predicate to every rule
   service_namespaces: []
-  # SDK-001 is opt-in because it depends on a vendored support matrix.
-  enable_sdk_rules: false
+  enable_sdk_rules: false   # turn on SDK-001
 
 spec:
   upstream_repo: "instrumentation-score/spec"
@@ -222,120 +142,25 @@ semconv:
   upstream_ref: "v1.37.0"
 ```
 
-The default index patterns target native OTel ingest in Elastic Serverless. If
-you use legacy Elastic APM data streams, update the index patterns and field
-paths in `configs/esql-mappings.yaml`.
+Defaults target native OTel ingest in Elastic Serverless. For legacy Elastic
+APM data streams, edit index patterns and field paths in
+`configs/esql-mappings.yaml`.
 
-`filters.environments` and `filters.service_namespaces` are appended to every
-rule query as `AND (...)` predicates. Scope to prod-like environments to keep
-findings actionable; leave empty to evaluate across all data.
+## More
 
-## Current Review
+- [docs/ADVANCED.md](docs/ADVANCED.md) — every command and flag, config
+  reference, demo stack, development, release process.
+- [agent-skill.md](agent-skill.md) — the exact markdown Vern uploads to Agent
+  Builder.
 
-Current `vern review` result:
+## Acknowledgments
 
-| Check | Status | Details |
-|---|---|---|
-| Config | Pass | `vern.yaml` |
-| Mappings | Pass | `./configs/esql-mappings.yaml` |
-| Spec version | Pass | `0.1` |
-| Score completeness | Warning | Score is partial |
-| Missing mappings | Pass | `0` missing spec rules |
-| Disabled blockers | Warning | `8` rules mapped but blocked with documented reasons |
-| Workflow config flow | Pass | Uses configured result and annotations indexes |
-| Dashboard config flow | Pass | Uses configured result index |
-| Agent skill config flow | Pass | Uses configured result and signal index patterns |
-| Errors | Pass | `0` |
-| Warnings | Warning | `1` coverage warning |
+Vern builds on prior work from:
 
-## Rule Coverage
-
-| Rule | Target | Impact | Status | Notes |
-|---|---|---|---|---|
-| `RES-005` | Resource | Critical | Enabled | `service.name` is present |
-| `RES-001` | Resource | Normal | Enabled | `service.instance.id` is present |
-| `RES-002` | Resource | Important | Enabled | `service.instance.id` is unique across logical resources |
-| `RES-003` | Resource | Important | Enabled | `k8s.pod.uid` is present for Kubernetes telemetry |
-| `SPA-001` | Span | Normal | Enabled | Limited number of `INTERNAL` spans per service |
-| `SPA-002` | Span | Normal | Enabled | Parent span ids exist in the same trace |
-| `SPA-003` | Span | Important | Heuristic | Span-name cardinality; upstream criteria is TODO |
-| `SPA-004` | Span | Important | Enabled | Root spans are not `CLIENT` spans |
-| `SPA-005` | Span | Important | Enabled | Traces do not contain many short-duration spans |
-| `LOG-001` | Log | Important | Enabled | Debug logs are not enabled in production for longer than 14 days |
-| `LOG-002` | Log | Important | Enabled | Log records have severity set |
-| `RES-004` | Resource, Log, Span | Important | Disabled | Requires semantic-convention placement catalog |
-| `MET-001` | Metric | Important | Disabled | Requires generated per-dimension cardinality checks or a metric dimension catalog |
-| `MET-002` | Metric | Important | Disabled | Metric unit metadata lacks safe per-service attribution |
-| `MET-003` | Metric | Important | Disabled | Metric unit consistency lacks safe per-service attribution |
-| `MET-004` | Metric | Normal | Disabled | Histogram bucket boundaries are not exposed generically |
-| `MET-005` | Metric | Normal | Disabled | Name/unit check needs service attribution or global catalog mode |
-| `MET-006` | Metric | Important | Disabled | Requires semantic-convention attribute key catalog |
-| `SDK-001` | SDK | Low | Disabled | Requires SDK/runtime support metadata and support matrix |
-
-Summary: `11` enabled, `1` heuristic, `8` disabled, `0` missing.
-
-Coverage goal: Vern should have zero missing mappings, enable rules only when
-they can produce accurate service-level rows, and document blockers where full
-coverage is not yet possible.
-
-## Local Validation
-
-The demo stack validates rule ES|QL against local Elasticsearch. It does not run
-local Kibana or Elastic Workflows.
-
-```bash
-make demo-up
-make demo-review
-make demo-validate
-make demo-down
-```
-
-`make demo-up` starts Elasticsearch, an EDOT/OTel collector, a deterministic
-trace generator, and a small log generator.
-
-## Development
-
-```bash
-go test ./...
-go run . review
-go run . setup --dry-run --kibana-url https://example.kb.us-east-1.elastic.cloud
-make dist
-```
-
-Useful paths:
-
-| Path | Purpose |
-|---|---|
-| `cmd/` | Cobra commands |
-| `internal/config` | Config parsing and defaults |
-| `internal/coverage` | Vendored spec parsing and coverage summary |
-| `internal/review` | Reproducibility checks |
-| `internal/mappings` | Mapping load and template resolution |
-| `internal/workflow/elastic` | Elastic Workflow generation |
-| `internal/dashboard` | Kibana saved object generation |
-| `internal/agent` | Agent Builder skill and agent definitions |
-| `internal/sync` | Kibana API client |
-| `demo/` | Local validation stack |
-| `agent-skill.md` | Generated Agent Builder skill markdown |
-
-## Release
-
-Local release build:
-
-```bash
-make dist
-```
-
-GitHub releases are published by `.github/workflows/release.yml` when a tag that
-starts with `v` is pushed:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The workflow runs tests, builds Linux/macOS/Windows binaries for amd64 and
-arm64, writes checksums, and attaches artifacts to the GitHub release.
+- [chit786/instrumentation-score](https://github.com/chit786/instrumentation-score) — reference Go CLI for the spec
+- [elastic/ai-github-actions-playground](https://github.com/elastic/ai-github-actions-playground) — AI tooling patterns for Elastic
+- Alexander Wert's [Instrumentation Score blog post](https://www.elastic.co/observability-labs/blog/otel-instrumentation-score)
+  on Elastic Observability Labs — the motivating writeup for the score
 
 ## License
 

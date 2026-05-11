@@ -14,8 +14,12 @@
 /workflows.yaml
 /workflows-*.yaml
 
-# Local planning docs
-/docs/
+# docs/ contents are local-only by default for working/planning notes;
+# allowlist public docs explicitly. Note: must ignore contents (/docs/*)
+# rather than the directory itself, or git won't descend to re-include.
+/docs/*
+!/docs/ADVANCED.md
+!/docs/images/
 
 # Editor / OS
 .DS_Store
