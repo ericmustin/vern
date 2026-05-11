@@ -9,10 +9,13 @@ import (
 
 // builder holds parameters used by every saved object factory.
 type builder struct {
-	resultIndex  string
-	indexPattern string
-	specBaseURL  string
-	coverage     *coverage.Summary
+	resultIndex         string
+	indexPattern        string
+	signalIndexPattern  string
+	specBaseURL         string
+	serviceDrilldownURL string
+	exampleDiscoverURL  string
+	coverage            *coverage.Summary
 }
 
 // jsonString serializes v into a JSON string. Several Kibana fields
@@ -55,6 +58,7 @@ var scorePalette = map[string]interface{}{
 func (b *builder) buildAll() []SavedObject {
 	return []SavedObject{
 		b.dataView(),
+		b.signalDataView(),
 		b.savedSearchTotals(),
 		b.savedSearchRules(),
 		b.lensOverviewTable(),
@@ -63,6 +67,7 @@ func (b *builder) buildAll() []SavedObject {
 		b.lensSvcCount(),
 		b.lensDrilldownScore(),
 		b.lensPiePassFail(lensDrilldownPie, "Vern: Pass / Fail (selected service)", ""),
+		b.lensRuleBreakdown(),
 		b.overviewDashboard(),
 		b.drilldownDashboard(),
 	}
@@ -70,10 +75,26 @@ func (b *builder) buildAll() []SavedObject {
 
 func (b *builder) dataView() SavedObject {
 	formatMap := map[string]interface{}{
+		"service.name": map[string]interface{}{
+			"id": "url",
+			"params": map[string]interface{}{
+				"urlTemplate":          b.serviceDrilldownURL,
+				"labelTemplate":        "{{value}}",
+				"openLinkInCurrentTab": true,
+			},
+		},
 		"rule_id": map[string]interface{}{
 			"id": "url",
 			"params": map[string]interface{}{
 				"urlTemplate":          b.specBaseURL + "/{{value}}.md",
+				"labelTemplate":        "{{value}}",
+				"openLinkInCurrentTab": false,
+			},
+		},
+		"example": map[string]interface{}{
+			"id": "url",
+			"params": map[string]interface{}{
+				"urlTemplate":          b.exampleDiscoverURL,
 				"labelTemplate":        "{{value}}",
 				"openLinkInCurrentTab": false,
 			},
@@ -89,6 +110,19 @@ func (b *builder) dataView() SavedObject {
 			"name":           "Vern: Instrumentation Score Results",
 			"timeFieldName":  "evaluated_at",
 			"fieldFormatMap": jsonString(formatMap),
+		},
+		References: []Reference{},
+	}
+}
+
+func (b *builder) signalDataView() SavedObject {
+	return SavedObject{
+		ID:   signalDataViewID,
+		Type: "index-pattern",
+		Attributes: map[string]interface{}{
+			"title":         b.signalIndexPattern,
+			"name":          "Vern: OTel Signal Evidence",
+			"timeFieldName": "@timestamp",
 		},
 		References: []Reference{},
 	}
@@ -204,7 +238,7 @@ func (b *builder) lensOverviewTable() SavedObject {
 	// score indexed as text). category likewise via TO_STRING for safety.
 	return b.lensFromESQL(lensOverviewTable, "Vern: Service Scores",
 		"lnsDatatable",
-		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL score = score::double | KEEP service.name, score, category | SORT score DESC | LIMIT 100`, b.resultIndex),
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL score_num = score::double, run_sort = COALESCE(TO_DATETIME(run_started_at), evaluated_at) | STATS score = LAST(score_num, run_sort), category = LAST(category, run_sort), evaluated_at = LAST(evaluated_at, run_sort), run_id = LAST(run_id, run_sort) BY service.name | SORT score DESC | LIMIT 100`, b.resultIndex),
 		cols, viz)
 }
 
@@ -236,7 +270,7 @@ func (b *builder) lensPiePassFail(id, title, extraWhere string) SavedObject {
 		}},
 	}
 	return b.lensFromESQL(id, title, "lnsPie",
-		fmt.Sprintf(`FROM %s | %s | EVAL status = CASE(rule_passed == true, "Pass", "Fail") | STATS n = COUNT(*) BY status`, b.resultIndex, where),
+		fmt.Sprintf(`FROM %s | %s | EVAL run_sort = COALESCE(TO_DATETIME(run_started_at), evaluated_at) | STATS rule_passed = LAST(rule_passed, run_sort) BY service.name, rule_id | EVAL status = CASE(rule_passed == true, "Pass", "Fail") | STATS n = COUNT(*) BY status`, b.resultIndex, where),
 		cols, viz)
 }
 
@@ -254,7 +288,7 @@ func (b *builder) lensAvgScore() SavedObject {
 	}
 	return b.lensFromESQL(lensOverviewAvgScore, "Vern: Average score",
 		"lnsMetric",
-		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL s = score::double | STATS avg_score = ROUND(AVG(s), 1)`, b.resultIndex),
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL score_num = score::double, run_sort = COALESCE(TO_DATETIME(run_started_at), evaluated_at) | STATS score = LAST(score_num, run_sort) BY service.name | STATS avg_score = ROUND(AVG(score), 1)`, b.resultIndex),
 		cols, viz)
 }
 
@@ -271,7 +305,7 @@ func (b *builder) lensSvcCount() SavedObject {
 	}
 	return b.lensFromESQL(lensOverviewSvcCount, "Vern: Services scored",
 		"lnsMetric",
-		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | STATS services = COUNT(*)`, b.resultIndex),
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL run_sort = COALESCE(TO_DATETIME(run_started_at), evaluated_at) | STATS evaluated_at = LAST(evaluated_at, run_sort) BY service.name | STATS services = COUNT(*)`, b.resultIndex),
 		cols, viz)
 }
 
@@ -289,6 +323,41 @@ func (b *builder) lensDrilldownScore() SavedObject {
 	}
 	return b.lensFromESQL(lensDrilldownScore, "Vern: Selected service score",
 		"lnsMetric",
-		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL score = score::double | KEEP score | LIMIT 1`, b.resultIndex),
+		fmt.Sprintf(`FROM %s | WHERE rule_id == "_TOTAL" | EVAL score_num = score::double, run_sort = COALESCE(TO_DATETIME(run_started_at), evaluated_at) | STATS score = LAST(score_num, run_sort) BY service.name | SORT score DESC | LIMIT 1`, b.resultIndex),
+		cols, viz)
+}
+
+func (b *builder) lensRuleBreakdown() SavedObject {
+	cols := []map[string]interface{}{
+		col("service.name", "service.name", "string"),
+		col("rule_id", "rule_id", "string"),
+		col("impact", "impact", "string"),
+		col("target", "target", "string"),
+		col("rule_passed", "rule_passed", "boolean"),
+		col("extent", "extent", "number"),
+		col("example", "example", "string"),
+		col("description", "description", "string"),
+		col("evaluated_at", "evaluated_at", "date"),
+	}
+	viz := map[string]interface{}{
+		"columns": []map[string]interface{}{
+			{"columnId": "service.name", "isTransposed": false},
+			{"columnId": "rule_id", "isTransposed": false},
+			{"columnId": "impact", "isTransposed": false},
+			{"columnId": "target", "isTransposed": false},
+			{"columnId": "rule_passed", "isTransposed": false},
+			{"columnId": "extent", "alignment": "right"},
+			{"columnId": "example", "isTransposed": false},
+			{"columnId": "description", "isTransposed": false},
+			{"columnId": "evaluated_at", "isTransposed": false},
+		},
+		"layerId":        "l1",
+		"layerType":      "data",
+		"rowHeight":      "single",
+		"rowHeightLines": 1,
+	}
+	return b.lensFromESQL(lensRuleBreakdown, "Vern: Latest Per-Rule Breakdown",
+		"lnsDatatable",
+		fmt.Sprintf(`FROM %s | WHERE NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL", "_COVERAGE")) | EVAL extent_num = extent::double, run_sort = COALESCE(TO_DATETIME(run_started_at), evaluated_at) | STATS rule_passed = LAST(rule_passed, run_sort), extent = LAST(extent_num, run_sort), example = LAST(example, run_sort), impact = LAST(impact, run_sort), target = LAST(target, run_sort), description = LAST(description, run_sort), evaluated_at = LAST(evaluated_at, run_sort), run_id = LAST(run_id, run_sort) BY service.name, rule_id | SORT service.name ASC, rule_id ASC | LIMIT 500`, b.resultIndex),
 		cols, viz)
 }

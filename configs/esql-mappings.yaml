@@ -74,13 +74,12 @@ rules:
     target: "Resource"
     notes: >
       Derives a logical-resource key from k8s pod uid/name, host.name,
-      host.id, container.id, service.node.name, and k8s.node.name. An empty
-      key (no k8s/host/container/service-node
-      attrs) is treated as "@@UNVERIFIABLE@@" and excluded from duplicate
-      detection. A service fails if any of its instance.ids appears with
-      multiple distinct logical resources. If your cluster lacks any of
-      these fields in its mapping, the query will fail to plan and this
-      rule should be disabled.
+      container.id, and k8s.node.name. ES|QL fails planning when referenced
+      fields are absent, so this conservative native-OTLP mapping avoids
+      less consistently indexed fields such as host.id and service.node.name.
+      An empty key is treated as "@@UNVERIFIABLE@@" and excluded from
+      duplicate detection. A service fails if any of its instance.ids appears
+      with multiple distinct logical resources.
     query: |
       FROM {{ .Indices.Traces }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}
@@ -89,12 +88,10 @@ rules:
       | EVAL logical_resource = CONCAT(
             COALESCE(resource.attributes.k8s.pod.uid, ""), "|",
             COALESCE(resource.attributes.k8s.pod.name, ""), "|",
-            COALESCE(resource.attributes.host.id, ""), "|",
             COALESCE(resource.attributes.host.name, ""), "|",
             COALESCE(resource.attributes.container.id, ""), "|",
-            COALESCE(resource.attributes.service.node.name, ""), "|",
             COALESCE(resource.attributes.k8s.node.name, ""))
-      | EVAL logical_resource = CASE(logical_resource == "||||||", "@@UNVERIFIABLE@@", logical_resource)
+      | EVAL logical_resource = CASE(logical_resource == "||||", "@@UNVERIFIABLE@@", logical_resource)
       | STATS distinct_resources = COUNT_DISTINCT(logical_resource),
               has_unverifiable = MAX(CASE(logical_resource == "@@UNVERIFIABLE@@", 1, 0))
               BY resource.attributes.service.name, instance_id = resource.attributes.service.instance.id
@@ -137,6 +134,26 @@ rules:
       | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
 
+  - spec_rule_id: "RES-004"
+    enabled: false
+    status: "blocked: requires a semantic-convention attribute placement catalog before this can be accurate"
+    description: "Semantic conventions attributes are used at the right level"
+    impact: "Important"
+    target: "Resource, Log, Span"
+    notes: >
+      The spec requires validating that every semantic-convention attribute
+      appears at the correct OTLP level. Elastic can query known field paths,
+      but an accurate implementation needs a versioned semantic-convention
+      placement catalog so Vern knows which keys are resource-only, span-only,
+      log-only, or valid at multiple levels. Without that catalog, a query
+      would either miss most violations or hardcode an arbitrary partial list.
+    query: |
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "RES-004 blocked: semantic-convention placement catalog required",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
+
   # ─── Span Rules ───────────────────────────────────────────────
 
   - spec_rule_id: "SPA-001"
@@ -165,33 +182,34 @@ rules:
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "SPA-002"
-    enabled: false
-    status: "requires-validation"
+    enabled: true
     description: "Traces do not contain orphan spans"
     impact: "Normal"
     target: "TraceSpan"
     notes: >
-      Uses an ES|QL IN-subquery that may not be supported across all
-      Elastic versions. Disabled by default until validated against the
-      target cluster.
+      Groups each trace and service, collects the trace's span_ids and
+      parent_span_ids, then checks the parent id set is a subset of the
+      span id set. This detects traces where any parent_span_id does not
+      exist in the same trace, matching the spec without a self-join.
     query: |
       FROM {{ .Indices.Traces }} METADATA _id
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}
-          AND parent_span_id IS NOT NULL
-          AND parent_span_id != ""
-      | EVAL parent_exists = parent_span_id IN (
-          FROM {{ .Indices.Traces }}
-          | WHERE @timestamp > NOW() - {{ .TimeWindow }}
-          | KEEP span_id
-        )
-      | EVAL is_orphan = NOT parent_exists
+      | EVAL has_parent = parent_span_id IS NOT NULL AND parent_span_id != ""
       | STATS
-          orphans = COUNT(*) WHERE is_orphan,
-          example = SAMPLE(parent_span_id, 1) WHERE is_orphan,
+          span_ids = VALUES(span_id),
+          parent_ids = VALUES(parent_span_id) WHERE has_parent,
+          parented_spans = COUNT(*) WHERE has_parent,
+          example = SAMPLE(_id, 1) WHERE has_parent
+            BY trace_id, resource.attributes.service.name
+      | WHERE parented_spans > 0
+      | EVAL trace_has_orphan = NOT MV_CONTAINS(span_ids, parent_ids)
+      | STATS
+          failed = COUNT(*) WHERE trace_has_orphan,
+          example = SAMPLE(trace_id, 1) WHERE trace_has_orphan,
           total = COUNT(*)
             BY resource.attributes.service.name
-      | EVAL rule_passed = (orphans == 0),
-          extent = CASE(total != 0, orphans::double / total::double, 0.0)
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
       | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
 
@@ -320,35 +338,149 @@ rules:
       | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
 
-  # ─── Metric Rules (disabled — schema needs design work) ────────
+  # ─── Metric Rules (mapped, blocked where service attribution is unsafe) ────────
   #
-  # Native OTel metric ingestion in Elastic Serverless stores each metric
-  # as its own field path under `metrics.*` (e.g. `metrics.process.cpu.time`)
-  # rather than as a `metric.name` keyword. MET-001 (cardinality) and MET-003
-  # (consistent units) need a different query strategy — likely targeting
-  # the APM-style aggregation streams (metrics-service_*.otel-default).
+  # Elastic 9.4 adds PROMQL as an ES|QL source command and METRICS_INFO exposes
+  # metric_name, unit, metric_type, field_type, and dimension_fields from TS
+  # sources. Those are enough to design metric-catalog checks, but the score
+  # contract is per-service. Until Vern has a service-attribution strategy for
+  # metadata-only metric rows, these mappings remain disabled with explicit
+  # blocked reasons instead of being left missing.
 
   - spec_rule_id: "MET-001"
     enabled: false
-    status: "needs-design"
+    status: "blocked: requires generated per-dimension queries or a metric dimension catalog for per-service cardinality"
     description: "Metric attributes have bound cardinality"
     impact: "Important"
     target: "Metric"
+    notes: >
+      Spec requires cardinality per metric name and attribute key within a
+      1-hour window. Elastic 9.4 PROMQL can query time-series metrics and
+      TS/METRICS_INFO can list dimension field names, but neither gives a
+      single static ES|QL query that dynamically counts distinct values for
+      every discovered dimension and emits per-service rows. Implement by
+      generating per-dimension checks from METRICS_INFO or a vendored metric
+      dimension catalog.
     query: |
-      FROM {{ .Indices.Metrics }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
-      | KEEP _id
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "MET-001 blocked: metric dimension cardinality needs generated per-dimension queries",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "MET-002"
+    enabled: false
+    status: "blocked: requires per-service metric unit attribution or an accepted global metric-catalog scoring mode"
+    description: "Metrics have useful metric units"
+    impact: "Important"
+    target: "Metric"
+    notes: >
+      TS/METRICS_INFO exposes the declared unit for each metric field, so a
+      global catalog check is feasible in Elastic 9.4. Vern does not enable
+      it yet because METRICS_INFO metadata rows do not include service.name,
+      and emitting a global pseudo-service would overpromise service-level
+      scoring. Implement after adding a documented global metric-catalog mode
+      or a service-attribution strategy.
+    query: |
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "MET-002 blocked: metric unit metadata has no safe per-service attribution yet",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-003"
     enabled: false
-    status: "needs-design"
+    status: "blocked: requires per-service metric unit attribution or an accepted global metric-catalog scoring mode"
     description: "Metric names are consistently associated with the same metric unit"
     impact: "Important"
     target: "Metric"
+    notes: >
+      TS/METRICS_INFO can reveal multiple unit definitions for a metric name
+      across backing indices. That supports a global catalog check, but not
+      a per-service score row. Keep disabled until Vern can either attribute
+      metric metadata to services or explicitly separate global metric-catalog
+      findings from service scores.
     query: |
-      FROM {{ .Indices.Metrics }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
-      | KEEP _id
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "MET-003 blocked: unit consistency metadata has no safe per-service attribution yet",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "MET-004"
+    enabled: false
+    status: "blocked: histogram bucket boundaries are not exposed by PROMQL/METRICS_INFO for generic per-service checks"
+    description: "Histogram metrics consistently use the same histogram buckets per metric name"
+    impact: "Normal"
+    target: "Metric"
+    notes: >
+      The spec requires comparing histogram bucket definitions by metric
+      name over 14 days. Elastic 9.4 PROMQL is preview and explicitly has
+      histogram-related limitations, and METRICS_INFO exposes metric_type
+      but not bucket boundary sets. Implement after bucket metadata is
+      available in ES|QL or Vern has an OTLP histogram extraction path.
+    query: |
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "MET-004 blocked: histogram bucket metadata unavailable to generic ES|QL mapping",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "MET-005"
+    enabled: false
+    status: "blocked: requires metric unit metadata with per-service attribution or global catalog mode"
+    description: "Metric names do not contain the name of the metric unit"
+    impact: "Normal"
+    target: "Metric"
+    notes: >
+      This can be checked from metric_name and unit via TS/METRICS_INFO for
+      a global metric catalog. It remains disabled because Vern's scoring
+      contract is per-service and METRICS_INFO does not emit service.name.
+    query: |
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "MET-005 blocked: unit/name catalog check needs service attribution or global mode",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "MET-006"
+    enabled: false
+    status: "blocked: requires a semantic-convention attribute key catalog"
+    description: "Metric names do not equal semantic convention attribute keys"
+    impact: "Important"
+    target: "Metric"
+    notes: >
+      TS/METRICS_INFO can list metric_name values, but the rule requires
+      comparing them to the set of semantic-convention attribute keys. Vern
+      needs a versioned semantic-convention catalog before this can be exact.
+    query: |
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "MET-006 blocked: semantic-convention attribute key catalog required",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
+
+  # ─── SDK Rules ────────────────────────────────────────────────
+
+  - spec_rule_id: "SDK-001"
+    enabled: false
+    status: "blocked: requires SDK/runtime support metadata and a versioned support matrix"
+    description: "Dependencies (language and runtime) are supported by the SDK"
+    impact: "Low"
+    target: "SDK"
+    notes: >
+      The spec requires comparing observed instrumentation SDK, language,
+      and runtime versions against support windows. OTLP resource attributes
+      may contain telemetry.sdk.* and process.runtime.* fields, but they are
+      not guaranteed and support windows are external, language-specific
+      metadata. Implement after Vern vendors a support matrix and documents
+      required telemetry fields.
+    query: |
+      ROW rule_passed = false,
+          `service.name` = "_coverage_blocked",
+          example = "SDK-001 blocked: SDK/runtime support matrix required",
+          extent = 1.0
+      | KEEP rule_passed, service.name, example, extent
 
   # ─── Score Aggregation (final step in workflow) ───────────────
 

@@ -14,6 +14,9 @@
 /workflows.yaml
 /workflows-*.yaml
 
+# Local planning docs
+/docs/
+
 # Editor / OS
 .DS_Store
 *.swp

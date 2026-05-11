@@ -270,6 +270,13 @@ func Text(report *Report) string {
 	fmt.Fprintf(&b, "  disabled:  %s\n", coverage.Join(report.Coverage.DisabledRules))
 	fmt.Fprintf(&b, "  missing:   %s\n", coverage.Join(report.Coverage.MissingRules))
 
+	if details := coverageDetails(report.Coverage.Rules); len(details) > 0 {
+		fmt.Fprintf(&b, "\nCoverage details\n")
+		for _, detail := range details {
+			fmt.Fprintf(&b, "  %s\n", detail)
+		}
+	}
+
 	if len(report.Artifacts) > 0 {
 		fmt.Fprintf(&b, "\nGenerated artifact checks\n")
 		for _, check := range report.Artifacts {
@@ -312,6 +319,21 @@ func Text(report *Report) string {
 
 func JSON(report *Report) ([]byte, error) {
 	return json.MarshalIndent(report, "", "  ")
+}
+
+func coverageDetails(rules []coverage.RuleCoverage) []string {
+	var details []string
+	for _, rule := range rules {
+		if rule.Status == "enabled" {
+			continue
+		}
+		detail := fmt.Sprintf("[%s] %s (%s, %s)", rule.Status, rule.ID, rule.Impact, rule.Target)
+		if rule.Reason != "" {
+			detail += ": " + rule.Reason
+		}
+		details = append(details, detail)
+	}
+	return details
 }
 
 func (r *Report) addError(check, msg string) {

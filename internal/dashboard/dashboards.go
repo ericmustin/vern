@@ -55,7 +55,7 @@ func (b *builder) overviewDashboard() SavedObject {
 
 	header := markdownPanel("md", 0, 0, 48, 4,
 		"## Vern — Instrumentation Score\n\n"+
-			"Partial score leaderboard from the latest workflow run. **Click a service.name in the table → \"Open Service Drill-down\"** to inspect that service. "+
+			"Partial score leaderboard collapsed to the latest result per service. **Click a service.name in the table → \"Open Service Drill-down\"** to inspect that service. "+
 			"Click any column header to sort.\n\nSpec: https://github.com/instrumentation-score/spec")
 
 	avgScore := referencedPanel("metric-avg", "lens", "Average score", 0, 4, 16, 8, nil)
@@ -84,8 +84,7 @@ func (b *builder) overviewDashboard() SavedObject {
 	}
 	table := referencedPanel("table-scores", "lens", "Service scores", 0, 12, 48, 18, tableEmbed)
 
-	// Discover-style detail row (still useful for browsing all rule rows).
-	detail := referencedPanel("search-rules", "search", "All rule evidence (sortable)", 0, 30, 48, 14, nil)
+	detail := referencedPanel("table-rules", "lens", "Latest rule evidence", 0, 30, 48, 14, nil)
 
 	panels := []map[string]interface{}{header, avgScore, svcCount, pie, table, detail}
 
@@ -111,7 +110,7 @@ func (b *builder) overviewDashboard() SavedObject {
 			{ID: lensOverviewSvcCount, Name: "metric-svc:panel_metric-svc", Type: "lens"},
 			{ID: lensOverviewPie, Name: "pie-passfail:panel_pie-passfail", Type: "lens"},
 			{ID: lensOverviewTable, Name: "table-scores:panel_table-scores", Type: "lens"},
-			{ID: searchRulesID, Name: "search-rules:panel_search-rules", Type: "search"},
+			{ID: lensRuleBreakdown, Name: "table-rules:panel_table-rules", Type: "lens"},
 			{ID: drilldownID, Name: "table-scores:drilldown:DASHBOARD_TO_DASHBOARD_DRILLDOWN:" + drilldownEvent + ":dashboardId", Type: "dashboard"},
 		},
 	}
@@ -145,14 +144,13 @@ func (b *builder) drilldownDashboard() SavedObject {
 
 	header := markdownPanel("md", 0, 0, 48, 4,
 		"### Service drill-down\n\n"+
-			"Pick a service in the **Service** control above. The partial score gauge, pass/fail pie, and per-rule breakdown table all filter together. "+
-			"Click any **rule_id** in the breakdown to open the upstream spec.")
+			"Pick a service in the **Service** control above. The partial score gauge, pass/fail pie, and latest per-rule breakdown table all filter together. "+
+			"Click any **rule_id** to open the upstream spec, or **example** to search the source signal data.")
 
 	score := referencedPanel("metric-score", "lens", "Score", 0, 4, 24, 8, nil)
 	pie := referencedPanel("pie-passfail", "lens", "Pass / fail", 24, 4, 24, 8, nil)
 
-	// Per-rule breakdown stays a saved search (sortable Discover, rule_id URL formatter).
-	rules := referencedPanel("search-rules", "search", "Per-rule breakdown", 0, 12, 48, 18, nil)
+	rules := referencedPanel("table-rules", "lens", "Latest per-rule breakdown", 0, 12, 48, 18, nil)
 
 	panels := []map[string]interface{}{header, score, pie, rules}
 
@@ -178,7 +176,7 @@ func (b *builder) drilldownDashboard() SavedObject {
 			{ID: dataViewID, Name: "controlGroup_" + ctlID + ":optionsListDataView", Type: "index-pattern"},
 			{ID: lensDrilldownScore, Name: "metric-score:panel_metric-score", Type: "lens"},
 			{ID: lensDrilldownPie, Name: "pie-passfail:panel_pie-passfail", Type: "lens"},
-			{ID: searchRulesID, Name: "search-rules:panel_search-rules", Type: "search"},
+			{ID: lensRuleBreakdown, Name: "table-rules:panel_table-rules", Type: "lens"},
 		},
 	}
 }
