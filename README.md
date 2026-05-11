@@ -153,6 +153,15 @@ APM data streams, edit index patterns and field paths in
 - [agent-skill.md](agent-skill.md) — the exact markdown Vern uploads to Agent
   Builder.
 
+## Acknowledgments
+
+Vern builds on prior work from:
+
+- [chit786/instrumentation-score](https://github.com/chit786/instrumentation-score) — reference Go CLI for the spec
+- [elastic/ai-github-actions-playground](https://github.com/elastic/ai-github-actions-playground) — AI tooling patterns for Elastic
+- Alexander Wert's [Instrumentation Score blog post](https://www.elastic.co/observability-labs/blog/otel-instrumentation-score)
+  on Elastic Observability Labs — the motivating writeup for the score
+
 ## License
 
 [MIT](./LICENSE) © Eric Mustin
