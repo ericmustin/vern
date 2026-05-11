@@ -17,6 +17,31 @@ type TemplateData struct {
 	ResultIndex          string
 	AnnotationsIndex     string
 	CardinalityThreshold int
+
+	// ScopeFilter is an ES|QL WHERE-clause fragment (without leading "AND ")
+	// that narrows rule evaluation to user-configured environments/namespaces.
+	// Empty when no filters are set.
+	ScopeFilter string
+
+	// SemconvAttributeKeys is a comma-separated, double-quoted list of all
+	// semantic-convention attribute keys, suitable for IN (...) expressions.
+	// e.g. `"http.request.method", "service.name", ...`
+	SemconvAttributeKeys string
+
+	// SemconvResourceOnlyKeys, SemconvSpanOnlyKeys, SemconvLogOnlyKeys,
+	// SemconvMetricOnlyKeys are subsets of SemconvAttributeKeys with the same
+	// quoted-CSV format, used by RES-004 to flag attribute placement violations.
+	SemconvResourceOnlyKeys string
+	SemconvSpanOnlyKeys     string
+	SemconvLogOnlyKeys      string
+	SemconvMetricOnlyKeys   string
+
+	// MET001AttrKeys is the allowlist of high-cardinality-risk attribute keys
+	// to evaluate against the per-metric cardinality threshold.
+	MET001AttrKeys []string
+
+	// SDKSupportMatrix is rendered ES|QL CASE-ladder text consumed by SDK-001.
+	SDKSupportMatrix string
 }
 
 type ResolveResult struct {
@@ -31,15 +56,51 @@ type SkippedRule struct {
 }
 
 func Resolve(rules []RuleMapping, cfg *config.Config) (*ResolveResult, error) {
-	data := TemplateData{
+	return resolveWith(rules, buildTemplateData(cfg))
+}
+
+// ResolveWithData lets the caller inject catalog data (semconv keys, SDK
+// matrix) that the resolver itself does not own. Callers that don't need
+// catalogs should use Resolve.
+func ResolveWithData(rules []RuleMapping, cfg *config.Config, override TemplateData) (*ResolveResult, error) {
+	data := buildTemplateData(cfg)
+	if override.SemconvAttributeKeys != "" {
+		data.SemconvAttributeKeys = override.SemconvAttributeKeys
+	}
+	if override.SemconvResourceOnlyKeys != "" {
+		data.SemconvResourceOnlyKeys = override.SemconvResourceOnlyKeys
+	}
+	if override.SemconvSpanOnlyKeys != "" {
+		data.SemconvSpanOnlyKeys = override.SemconvSpanOnlyKeys
+	}
+	if override.SemconvLogOnlyKeys != "" {
+		data.SemconvLogOnlyKeys = override.SemconvLogOnlyKeys
+	}
+	if override.SemconvMetricOnlyKeys != "" {
+		data.SemconvMetricOnlyKeys = override.SemconvMetricOnlyKeys
+	}
+	if len(override.MET001AttrKeys) > 0 {
+		data.MET001AttrKeys = override.MET001AttrKeys
+	}
+	if override.SDKSupportMatrix != "" {
+		data.SDKSupportMatrix = override.SDKSupportMatrix
+	}
+	return resolveWith(rules, data)
+}
+
+func buildTemplateData(cfg *config.Config) TemplateData {
+	return TemplateData{
 		Indices:              cfg.ESQL.IndexPatterns,
 		TimeWindow:           cfg.ESQL.TimeWindow,
 		ScoreLookback:        cfg.ESQL.ScoreLookback,
 		ResultIndex:          cfg.ESQL.ResultIndex,
 		AnnotationsIndex:     cfg.ESQL.AnnotationsIndex,
 		CardinalityThreshold: cfg.ESQL.CardinalityThreshold,
+		ScopeFilter:          buildScopeFilter(cfg.Filters),
 	}
+}
 
+func resolveWith(rules []RuleMapping, data TemplateData) (*ResolveResult, error) {
 	var result ResolveResult
 	var errs []string
 

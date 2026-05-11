@@ -22,3 +22,5 @@
 *.swp
 .idea/
 .vscode/
+.agents/
+skills-lock.json

@@ -47,6 +47,35 @@ esql:
   # Cardinality threshold for MET-001 rule
   cardinality_threshold: 10000
 
+# Optional rule-evaluation scope filters. Empty arrays = evaluate over all data.
+# Scoping to prod-like environments tends to produce more actionable findings.
+filters:
+  # Restrict evaluation to these deployment environments (matched case-insensitively
+  # against resource.attributes.deployment.environment.name).
+  environments: []
+  #   - "prod"
+  #   - "production"
+
+  # Restrict evaluation to these service namespaces.
+  service_namespaces: []
+
+  # SDK-001 (SDK/runtime support window) is opt-in because it depends on a
+  # vendored support matrix that drifts over time. Set true to score it.
+  enable_sdk_rules: false
+
+# Upstream spec source. `vern spec sync` fetches at this pinned ref and diffs
+# against ./spec/. Pin to a tag or commit SHA — never `main` in production —
+# so builds remain reproducible.
+spec:
+  upstream_repo: "instrumentation-score/spec"
+  upstream_ref: "main"
+
+# Upstream semantic-conventions source. `vern semconv sync` regenerates
+# internal/semconv/attribute_keys.go and placement.go from the pinned ref.
+semconv:
+  upstream_repo: "open-telemetry/semantic-conventions"
+  upstream_ref: "v1.37.0"
+
 # Elastic connection (used by `vern sync`)
 # The sync target is the KIBANA URL, not the Elasticsearch URL.
 # Can also be set via environment variables:

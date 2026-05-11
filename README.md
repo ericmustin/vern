@@ -145,6 +145,30 @@ vern sync --replace
 | `--skip-dashboards` | `false` | Skip dashboard import |
 | `--dry-run` | `false` | Validate without uploading |
 
+### `vern spec sync` / `vern spec status`
+
+Compares the locally vendored Instrumentation Score spec under `./spec/` with
+upstream at the pinned ref (`spec.upstream_ref` in `vern.yaml`). `status` is
+read-only; `sync --apply` overwrites local files and updates `./spec/VERSION`.
+
+```bash
+vern spec status
+vern spec sync --apply
+```
+
+### `vern semconv sync`
+
+Fetches the upstream OpenTelemetry semantic conventions at the pinned ref
+(`semconv.upstream_ref` in `vern.yaml`) and regenerates
+`internal/semconv/attribute_keys.go` and `placement.go`. The committed
+catalog powers MET-006 (metric name collisions with semconv keys) and
+RES-004 (semconv attribute placement).
+
+```bash
+vern semconv sync           # dry run — prints catalog summary
+vern semconv sync --apply   # regenerate Go files + VERSION
+```
+
 ### `vern agent setup`
 
 Creates or updates the Agent Builder skill and agent only.
@@ -180,11 +204,31 @@ esql:
   annotations_index: "observability-annotations"
   schedule: "1h"
   cardinality_threshold: 10000
+
+filters:
+  # Restrict evaluation to specific deployment environments (case-insensitive).
+  environments: []
+  # Restrict evaluation to specific service namespaces.
+  service_namespaces: []
+  # SDK-001 is opt-in because it depends on a vendored support matrix.
+  enable_sdk_rules: false
+
+spec:
+  upstream_repo: "instrumentation-score/spec"
+  upstream_ref: "main"
+
+semconv:
+  upstream_repo: "open-telemetry/semantic-conventions"
+  upstream_ref: "v1.37.0"
 ```
 
 The default index patterns target native OTel ingest in Elastic Serverless. If
 you use legacy Elastic APM data streams, update the index patterns and field
 paths in `configs/esql-mappings.yaml`.
+
+`filters.environments` and `filters.service_namespaces` are appended to every
+rule query as `AND (...)` predicates. Scope to prod-like environments to keep
+findings actionable; leave empty to evaluate across all data.
 
 ## Current Review
 
