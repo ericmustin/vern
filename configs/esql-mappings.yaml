@@ -36,7 +36,7 @@ rules:
     target: "Resource"
     query: |
       FROM {{ .Indices.Traces }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | EVAL missing_svc = resource.attributes.service.name IS NULL OR resource.attributes.service.name == ""
       | STATS
           failed = COUNT(*) WHERE missing_svc,
@@ -55,7 +55,7 @@ rules:
     target: "Resource"
     query: |
       FROM {{ .Indices.Traces }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | EVAL missing_instance = resource.attributes.service.instance.id IS NULL OR resource.attributes.service.instance.id == ""
       | STATS
           failed = COUNT(*) WHERE missing_instance,
@@ -82,7 +82,7 @@ rules:
       with multiple distinct logical resources.
     query: |
       FROM {{ .Indices.Traces }}
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND resource.attributes.service.instance.id IS NOT NULL
           AND resource.attributes.service.instance.id != ""
       | EVAL logical_resource = CONCAT(
@@ -117,7 +117,7 @@ rules:
       services do not contribute violations.
     query: |
       FROM {{ .Indices.Traces }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND COALESCE(
               resource.attributes.k8s.pod.uid,
               resource.attributes.k8s.pod.name,
@@ -135,23 +135,35 @@ rules:
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "RES-004"
-    enabled: false
-    status: "blocked: requires a semantic-convention attribute placement catalog before this can be accurate"
+    enabled: true
     description: "Semantic conventions attributes are used at the right level"
     impact: "Important"
     target: "Resource, Log, Span"
     notes: >
-      The spec requires validating that every semantic-convention attribute
-      appears at the correct OTLP level. Elastic can query known field paths,
-      but an accurate implementation needs a versioned semantic-convention
-      placement catalog so Vern knows which keys are resource-only, span-only,
-      log-only, or valid at multiple levels. Without that catalog, a query
-      would either miss most violations or hardcode an arbitrary partial list.
+      ES|QL is schema-strict: referencing a column that no document has ever
+      populated in the index mapping is a plan-time verification error, not a
+      runtime "0 rows" result. So a maximalist RES-004 check (every semconv
+      key at every level) fails to plan against most clusters. This narrow
+      tripwire query checks the single highest-signal misplacement we can
+      portably express: `service.version` appearing as a span attribute
+      rather than a resource attribute. The semconv catalog at
+      internal/semconv/placement.go is still generated for future use, but
+      consuming it dynamically requires per-index schema introspection that
+      Vern does not yet do. Widen the EVAL list below if you have confirmed
+      additional misplacements your environment.
     query: |
-      ROW rule_passed = false,
-          `service.name` = "_coverage_blocked",
-          example = "RES-004 blocked: semantic-convention placement catalog required",
-          extent = 1.0
+      FROM {{ .Indices.Traces }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+          AND resource.attributes.service.name IS NOT NULL
+      | EVAL misplaced = attributes.service.version IS NOT NULL
+      | STATS
+          failed = COUNT(_id) WHERE misplaced,
+          example = SAMPLE(_id, 1) WHERE misplaced,
+          total = COUNT(_id)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
 
   # ─── Span Rules ───────────────────────────────────────────────
@@ -167,7 +179,7 @@ rules:
       ("Internal") and OTel SDK form ("SPAN_KIND_INTERNAL").
     query: |
       FROM {{ .Indices.Traces }}
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND kind IN ("Internal", "SPAN_KIND_INTERNAL")
       | STATS internal_count = COUNT(*) BY trace_id, resource.attributes.service.name
       | EVAL too_many = internal_count > 10
@@ -193,7 +205,7 @@ rules:
       exist in the same trace, matching the spec without a self-join.
     query: |
       FROM {{ .Indices.Traces }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | EVAL has_parent = parent_span_id IS NOT NULL AND parent_span_id != ""
       | STATS
           span_ids = VALUES(span_id),
@@ -227,7 +239,7 @@ rules:
       to the cardinality ratio.
     query: |
       FROM {{ .Indices.Traces }}
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND name IS NOT NULL
       | STATS total = COUNT(*),
               distinct_names = COUNT_DISTINCT(name)
@@ -249,7 +261,7 @@ rules:
       violation. Matches both "Client" and "SPAN_KIND_CLIENT".
     query: |
       FROM {{ .Indices.Traces }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND (parent_span_id IS NULL OR parent_span_id == "")
       | EVAL is_client_root = kind IN ("Client", "SPAN_KIND_CLIENT")
       | STATS
@@ -273,7 +285,7 @@ rules:
       5ms = 5e6 ns.
     query: |
       FROM {{ .Indices.Traces }}
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND duration IS NOT NULL
       | EVAL is_short = duration < 5000000
       | STATS short_count = COUNT(*) WHERE is_short BY trace_id, resource.attributes.service.name
@@ -301,7 +313,7 @@ rules:
       (case-insensitive).
     query: |
       FROM {{ .Indices.Logs }} METADATA _id
-      | WHERE @timestamp > NOW() - 14d
+      | WHERE @timestamp > NOW() - 14d{{ .ScopeFilter }}
       | EVAL is_prod = STARTS_WITH(TO_LOWER(COALESCE(resource.attributes.deployment.environment.name, "")), "prod"),
           is_debug = TO_UPPER(COALESCE(severity_text, "")) == "DEBUG"
       | EVAL violation = is_prod AND is_debug
@@ -322,7 +334,7 @@ rules:
     target: "Log"
     query: |
       FROM {{ .Indices.Logs }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | EVAL no_sev = severity_text IS NULL
           OR severity_text == ""
           OR TO_UPPER(severity_text) == "UNSET"
@@ -338,87 +350,117 @@ rules:
       | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
 
-  # ─── Metric Rules (mapped, blocked where service attribution is unsafe) ────────
+  # ─── Metric Rules ─────────────────────────────────────────────
   #
-  # Elastic 9.4 adds PROMQL as an ES|QL source command and METRICS_INFO exposes
-  # metric_name, unit, metric_type, field_type, and dimension_fields from TS
-  # sources. Those are enough to design metric-catalog checks, but the score
-  # contract is per-service. Until Vern has a service-attribution strategy for
-  # metadata-only metric rows, these mappings remain disabled with explicit
-  # blocked reasons instead of being left missing.
+  # Schema assumptions for OTel-native metrics in Elastic Serverless:
+  #   - `TS <metrics-index> | TS_INFO` returns one row per unique time series
+  #     with columns {metric_name, data_stream, unit, metric_type, field_type,
+  #     dimension_fields (mv), dimensions (json-string)}.
+  #   - TS_INFO drops top-level columns (e.g. resource.attributes.service.name).
+  #     The dimension values live inside the `dimensions` JSON blob, so we
+  #     extract service.name with GROK.
+  #   - `TS` does not support COUNT(*); aggregations must reference a field.
+  # MET-004 (histogram bucket consistency) stays disabled because histogram
+  # bucket boundaries are not exposed via TS_INFO / METRICS_INFO as of 9.4.
 
   - spec_rule_id: "MET-001"
-    enabled: false
-    status: "blocked: requires generated per-dimension queries or a metric dimension catalog for per-service cardinality"
+    enabled: true
     description: "Metric attributes have bound cardinality"
     impact: "Important"
     target: "Metric"
     notes: >
-      Spec requires cardinality per metric name and attribute key within a
-      1-hour window. Elastic 9.4 PROMQL can query time-series metrics and
-      TS/METRICS_INFO can list dimension field names, but neither gives a
-      single static ES|QL query that dynamically counts distinct values for
-      every discovered dimension and emits per-service rows. Implement by
-      generating per-dimension checks from METRICS_INFO or a vendored metric
-      dimension catalog.
+      The spec requires cardinality per (metric name, attribute key) within
+      a 1-hour window. ES|QL's TS_INFO returns one row per unique time series
+      (i.e. one row per unique combination of metric_name + all dimension
+      values), so COUNT(metric_name) BY metric_name, service is a tight upper
+      bound on per-metric attribute cardinality — when the series count
+      exceeds the threshold, at least one attribute key MUST be over the
+      threshold too. This is more conservative than the spec but cheaper to
+      evaluate than enumerating per-attribute COUNT_DISTINCT, and it doesn't
+      depend on an attribute allowlist.
     query: |
-      ROW rule_passed = false,
-          `service.name` = "_coverage_blocked",
-          example = "MET-001 blocked: metric dimension cardinality needs generated per-dimension queries",
-          extent = 1.0
+      TS {{ .Indices.Metrics }}
+      | WHERE @timestamp > NOW() - 1h{{ .ScopeFilter }}
+      | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | STATS series_count = COUNT(metric_name) BY metric_name, svc
+      | EVAL over_threshold = series_count > {{ .CardinalityThreshold }}
+      | STATS
+          failed = COUNT(metric_name) WHERE over_threshold,
+          example = SAMPLE(metric_name, 1) WHERE over_threshold,
+          total = COUNT(metric_name)
+            BY svc
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-002"
-    enabled: false
-    status: "blocked: requires per-service metric unit attribution or an accepted global metric-catalog scoring mode"
+    enabled: true
     description: "Metrics have useful metric units"
     impact: "Important"
     target: "Metric"
     notes: >
-      TS/METRICS_INFO exposes the declared unit for each metric field, so a
-      global catalog check is feasible in Elastic 9.4. Vern does not enable
-      it yet because METRICS_INFO metadata rows do not include service.name,
-      and emitting a global pseudo-service would overpromise service-level
-      scoring. Implement after adding a documented global metric-catalog mode
-      or a service-attribution strategy.
+      Flags metrics whose declared unit is NULL, empty, or "1" (dimensionless).
+      The spec calls "1" out as a default-non-useful unit. This is enforced
+      per (metric_name, service.name) pair so the score is service-attributable.
     query: |
-      ROW rule_passed = false,
-          `service.name` = "_coverage_blocked",
-          example = "MET-002 blocked: metric unit metadata has no safe per-service attribution yet",
-          extent = 1.0
+      TS {{ .Indices.Metrics }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | EVAL missing_unit = unit IS NULL OR unit == "" OR unit == "1"
+      | STATS
+          failed = COUNT(metric_name) WHERE missing_unit,
+          example = SAMPLE(metric_name, 1) WHERE missing_unit,
+          total = COUNT(metric_name)
+            BY svc
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-003"
-    enabled: false
-    status: "blocked: requires per-service metric unit attribution or an accepted global metric-catalog scoring mode"
+    enabled: true
     description: "Metric names are consistently associated with the same metric unit"
     impact: "Important"
     target: "Metric"
     notes: >
-      TS/METRICS_INFO can reveal multiple unit definitions for a metric name
-      across backing indices. That supports a global catalog check, but not
-      a per-service score row. Keep disabled until Vern can either attribute
-      metric metadata to services or explicitly separate global metric-catalog
-      findings from service scores.
+      Per (metric_name, service.name) over the past 14 days, the spec window:
+      every time series sharing a metric_name MUST have the same unit. A
+      service fails when any of its metrics emits multiple units for the
+      same metric_name.
     query: |
-      ROW rule_passed = false,
-          `service.name` = "_coverage_blocked",
-          example = "MET-003 blocked: unit consistency metadata has no safe per-service attribution yet",
-          extent = 1.0
+      TS {{ .Indices.Metrics }}
+      | WHERE @timestamp > NOW() - 14d{{ .ScopeFilter }}
+      | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | STATS unit_count = COUNT_DISTINCT(unit) BY metric_name, svc
+      | EVAL inconsistent = unit_count > 1
+      | STATS
+          failed = COUNT(metric_name) WHERE inconsistent,
+          example = SAMPLE(metric_name, 1) WHERE inconsistent,
+          total = COUNT(metric_name)
+            BY svc
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-004"
     enabled: false
-    status: "blocked: histogram bucket boundaries are not exposed by PROMQL/METRICS_INFO for generic per-service checks"
+    status: "blocked: histogram bucket boundaries are not surfaced by TS_INFO/METRICS_INFO in 9.4"
     description: "Histogram metrics consistently use the same histogram buckets per metric name"
     impact: "Normal"
     target: "Metric"
     notes: >
-      The spec requires comparing histogram bucket definitions by metric
-      name over 14 days. Elastic 9.4 PROMQL is preview and explicitly has
-      histogram-related limitations, and METRICS_INFO exposes metric_type
-      but not bucket boundary sets. Implement after bucket metadata is
-      available in ES|QL or Vern has an OTLP histogram extraction path.
+      Bucket boundary metadata is not exposed by any ES|QL command in the
+      9.4 timeframe, including PROMQL preview. Revisit when histogram
+      bucket lists become introspectable (or when Vern adds an OTLP-direct
+      ingestion path).
     query: |
       ROW rule_passed = false,
           `service.name` = "_coverage_blocked",
@@ -427,59 +469,96 @@ rules:
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-005"
-    enabled: false
-    status: "blocked: requires metric unit metadata with per-service attribution or global catalog mode"
+    enabled: true
     description: "Metric names do not contain the name of the metric unit"
     impact: "Normal"
     target: "Metric"
     notes: >
-      This can be checked from metric_name and unit via TS/METRICS_INFO for
-      a global metric catalog. It remains disabled because Vern's scoring
-      contract is per-service and METRICS_INFO does not emit service.name.
+      Common violations: metrics named `*.seconds`, `*.bytes`, `*.percent`
+      when the unit is `s`, `By`, `%`. The check is case-insensitive on the
+      metric name and uses a fixed regex set so we don't depend on the unit
+      field for the match (only for the name pattern). RLIKE is the ES|QL
+      regex operator (infix), not a function — `col RLIKE "..."` is the
+      correct form.
     query: |
-      ROW rule_passed = false,
-          `service.name` = "_coverage_blocked",
-          example = "MET-005 blocked: unit/name catalog check needs service attribution or global mode",
-          extent = 1.0
+      TS {{ .Indices.Metrics }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | EVAL lower_name = TO_LOWER(metric_name),
+          contains_unit_word = lower_name RLIKE ".*[._](seconds?|milliseconds?|microseconds?|nanoseconds?|bytes?|kilobytes?|megabytes?|gigabytes?|percent(age)?)$"
+      | STATS
+          failed = COUNT(metric_name) WHERE contains_unit_word,
+          example = SAMPLE(metric_name, 1) WHERE contains_unit_word,
+          total = COUNT(metric_name)
+            BY svc
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-006"
-    enabled: false
-    status: "blocked: requires a semantic-convention attribute key catalog"
+    enabled: true
     description: "Metric names do not equal semantic convention attribute keys"
     impact: "Important"
     target: "Metric"
     notes: >
-      TS/METRICS_INFO can list metric_name values, but the rule requires
-      comparing them to the set of semantic-convention attribute keys. Vern
-      needs a versioned semantic-convention catalog before this can be exact.
+      Vern's vendored semantic-convention catalog (internal/semconv,
+      regenerated via `vern semconv sync`) has ~800 attribute keys, which
+      blows past the ES|QL parser's practical limit on `IN (...)` list
+      length. MET-006 uses a curated subset (see
+      internal/semconv/met006_keys.go) of the most-likely-to-be-misused
+      keys: identity attrs (service/host/k8s), HTTP/DB/RPC/messaging, plus
+      common dimension keys. Edit MET006CuratedKeys to widen.
     query: |
-      ROW rule_passed = false,
-          `service.name` = "_coverage_blocked",
-          example = "MET-006 blocked: semantic-convention attribute key catalog required",
-          extent = 1.0
+      TS {{ .Indices.Metrics }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      | TS_INFO
+      | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
+      | WHERE svc IS NOT NULL
+      | EVAL is_semconv_key = metric_name IN ({{ .MET006SemconvKeys }})
+      | STATS
+          failed = COUNT(metric_name) WHERE is_semconv_key,
+          example = SAMPLE(metric_name, 1) WHERE is_semconv_key,
+          total = COUNT(metric_name)
+            BY svc
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   # ─── SDK Rules ────────────────────────────────────────────────
 
   - spec_rule_id: "SDK-001"
     enabled: false
-    status: "blocked: requires SDK/runtime support metadata and a versioned support matrix"
+    opt_in_flag: "filters.enable_sdk_rules"
+    status: "opt-in: enable via filters.enable_sdk_rules in vern.yaml (vendored support matrix drifts)"
     description: "Dependencies (language and runtime) are supported by the SDK"
     impact: "Low"
     target: "SDK"
     notes: >
-      The spec requires comparing observed instrumentation SDK, language,
-      and runtime versions against support windows. OTLP resource attributes
-      may contain telemetry.sdk.* and process.runtime.* fields, but they are
-      not guaranteed and support windows are external, language-specific
-      metadata. Implement after Vern vendors a support matrix and documents
-      required telemetry fields.
+      Opt-in (filters.enable_sdk_rules: true). Compares observed
+      telemetry.sdk.language and telemetry.sdk.version resource attributes
+      against the vendored matrix in internal/sdksupport/matrix.go. Unknown
+      languages are treated as supported (false positives are worse than
+      gaps here). Services without telemetry.sdk.language do not contribute
+      to the rule.
     query: |
-      ROW rule_passed = false,
-          `service.name` = "_coverage_blocked",
-          example = "SDK-001 blocked: SDK/runtime support matrix required",
-          extent = 1.0
+      FROM {{ .Indices.Traces }} METADATA _id
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+          AND resource.attributes.service.name IS NOT NULL
+          AND resource.attributes.telemetry.sdk.language IS NOT NULL
+      | EVAL is_supported = {{ .SDKSupportMatrix }}
+      | EVAL is_unsupported = NOT is_supported
+      | STATS
+          failed = COUNT(*) WHERE is_unsupported,
+          example = SAMPLE(_id, 1) WHERE is_unsupported,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
 
   # ─── Score Aggregation (final step in workflow) ───────────────

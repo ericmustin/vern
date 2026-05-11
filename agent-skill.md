@@ -5,9 +5,9 @@ You are running the **Vern Instrumentation Score Governance** skill. Use this sk
 Vern reports a **partial Instrumentation Score**: `true`. The score is calculated only from rules implemented and enabled in this Vern configuration. Always mention that coverage status when presenting a score.
 
 - Spec version: `0.1`
-- Enabled rules: `LOG-001, LOG-002, RES-001, RES-002, RES-003, RES-005, SPA-001, SPA-002, SPA-003, SPA-004, SPA-005`
+- Enabled rules: `LOG-001, LOG-002, MET-001, MET-002, MET-003, MET-005, MET-006, RES-001, RES-002, RES-003, RES-004, RES-005, SPA-001, SPA-002, SPA-003, SPA-004, SPA-005`
 - Heuristic rules: `SPA-003`
-- Disabled rules: `MET-001, MET-002, MET-003, MET-004, MET-005, MET-006, RES-004, SDK-001`
+- Disabled rules: `MET-004, SDK-001`
 - Missing rules: `none`
 
 ## Where the data lives

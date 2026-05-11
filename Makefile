@@ -5,7 +5,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ericmustin/vern/cmd.version=$(VERSION)
 DIST_DIR ?= dist
 
-.PHONY: build install test clean dist demo-up demo-down demo-review demo-validate
+.PHONY: build install test clean dist demo-up demo-down demo-review demo-validate spec-status spec-sync semconv-sync
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -45,3 +45,15 @@ demo-review:
 
 demo-validate:
 	go run . --config demo/vern.yaml review --live-es-url http://localhost:9200
+
+# Show drift between local ./spec/ and upstream pinned ref (read-only).
+spec-status:
+	go run . spec status
+
+# Pull the upstream spec at the pinned ref (writes ./spec/* and ./spec/VERSION).
+spec-sync:
+	go run . spec sync --apply
+
+# Regenerate internal/semconv/attribute_keys.go and placement.go from upstream.
+semconv-sync:
+	go run . semconv sync --apply

@@ -15,6 +15,9 @@ type Config struct {
 	ESQL       ESQLConfig      `yaml:"esql"`
 	Elastic    ElasticConfig   `yaml:"elastic"`
 	Exclusions ExclusionConfig `yaml:"exclusions"`
+	Filters    FilterConfig    `yaml:"filters"`
+	Spec       SpecConfig      `yaml:"spec"`
+	Semconv    SemconvConfig   `yaml:"semconv"`
 }
 
 type ESQLConfig struct {
@@ -41,6 +44,22 @@ type ElasticConfig struct {
 type ExclusionConfig struct {
 	Services        []string `yaml:"services"`
 	ServicePatterns []string `yaml:"service_patterns"`
+}
+
+type FilterConfig struct {
+	Environments      []string `yaml:"environments"`
+	ServiceNamespaces []string `yaml:"service_namespaces"`
+	EnableSDKRules    bool     `yaml:"enable_sdk_rules"`
+}
+
+type SpecConfig struct {
+	UpstreamRepo string `yaml:"upstream_repo"`
+	UpstreamRef  string `yaml:"upstream_ref"`
+}
+
+type SemconvConfig struct {
+	UpstreamRepo string `yaml:"upstream_repo"`
+	UpstreamRef  string `yaml:"upstream_ref"`
 }
 
 func Load(path string) (*Config, error) {
@@ -97,5 +116,17 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.ESQL.IndexPatterns.Logs == "" {
 		c.ESQL.IndexPatterns.Logs = "logs-*.otel-*"
+	}
+	if c.Spec.UpstreamRepo == "" {
+		c.Spec.UpstreamRepo = "instrumentation-score/spec"
+	}
+	if c.Spec.UpstreamRef == "" {
+		c.Spec.UpstreamRef = "main"
+	}
+	if c.Semconv.UpstreamRepo == "" {
+		c.Semconv.UpstreamRepo = "open-telemetry/semantic-conventions"
+	}
+	if c.Semconv.UpstreamRef == "" {
+		c.Semconv.UpstreamRef = "v1.37.0"
 	}
 }

@@ -107,6 +107,89 @@ func TestResolve_SkipsDisabled(t *testing.T) {
 	}
 }
 
+func TestResolve_EmptyScopeFilterByDefault(t *testing.T) {
+	rules := []RuleMapping{{
+		SpecRuleID: "RES-005",
+		Enabled:    true,
+		Query:      "FROM {{ .Indices.Traces }} | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}",
+	}}
+
+	got, err := Resolve(rules, testConfig())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	q := got.Rules[0].ResolvedQuery
+	if strings.Contains(q, "AND") {
+		t.Errorf("expected no AND clause from empty ScopeFilter, got: %s", q)
+	}
+}
+
+func TestResolve_ScopeFilterRendersEnvironments(t *testing.T) {
+	rules := []RuleMapping{{
+		SpecRuleID: "RES-005",
+		Enabled:    true,
+		Query:      "FROM x | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}",
+	}}
+	cfg := testConfig()
+	cfg.Filters.Environments = []string{"prod", "Production"}
+
+	got, err := Resolve(rules, cfg)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	q := got.Rules[0].ResolvedQuery
+	if !strings.Contains(q, `TO_LOWER(COALESCE(resource.attributes.deployment.environment.name, ""))`) {
+		t.Errorf("expected env predicate, got: %s", q)
+	}
+	if !strings.Contains(q, `"prod"`) || !strings.Contains(q, `"production"`) {
+		t.Errorf("expected lowercased env values, got: %s", q)
+	}
+}
+
+func TestResolve_ScopeFilterRendersBothEnvAndNamespace(t *testing.T) {
+	rules := []RuleMapping{{
+		SpecRuleID: "RES-005",
+		Enabled:    true,
+		Query:      "FROM x | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}",
+	}}
+	cfg := testConfig()
+	cfg.Filters.Environments = []string{"prod"}
+	cfg.Filters.ServiceNamespaces = []string{"payments"}
+
+	got, err := Resolve(rules, cfg)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	q := got.Rules[0].ResolvedQuery
+	if !strings.Contains(q, `resource.attributes.service.namespace IN ("payments")`) {
+		t.Errorf("expected namespace predicate, got: %s", q)
+	}
+	// Both predicates must be joined by AND inside the same parens.
+	if !strings.Contains(q, " AND (") {
+		t.Errorf("expected AND-prefixed scope clause, got: %s", q)
+	}
+}
+
+func TestResolveWithData_InjectsSemconvCatalog(t *testing.T) {
+	rules := []RuleMapping{{
+		SpecRuleID: "MET-006",
+		Enabled:    true,
+		Query:      `FROM x | EVAL bad = name IN ({{ .SemconvAttributeKeys }})`,
+	}}
+	override := TemplateData{
+		SemconvAttributeKeys: `"http.request.method", "service.name"`,
+	}
+
+	got, err := ResolveWithData(rules, testConfig(), override)
+	if err != nil {
+		t.Fatalf("ResolveWithData: %v", err)
+	}
+	q := got.Rules[0].ResolvedQuery
+	if !strings.Contains(q, `"http.request.method"`) {
+		t.Errorf("expected semconv keys in query, got: %s", q)
+	}
+}
+
 func TestResolve_CollectsAllErrors(t *testing.T) {
 	rules := []RuleMapping{
 		{SpecRuleID: "BAD-1", Enabled: true, Query: "FROM {{ .Nonexistent }}"},
