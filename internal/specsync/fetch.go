@@ -61,10 +61,10 @@ func (f FileStatus) Status() string {
 
 // Report aggregates per-file status across the spec tree.
 type Report struct {
-	Repo       string
-	Ref        string
+	Repo        string
+	Ref         string
 	GeneratedAt time.Time
-	Files      []FileStatus
+	Files       []FileStatus
 }
 
 // NumOutOfSync returns the count of files whose Status is not "in-sync".

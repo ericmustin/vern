@@ -45,8 +45,8 @@ type rawDoc struct {
 }
 
 type rawGroup struct {
-	ID         string       `yaml:"id"`
-	Type       string       `yaml:"type"`
+	ID         string         `yaml:"id"`
+	Type       string         `yaml:"type"`
 	Attributes []rawAttribute `yaml:"attributes"`
 }
 

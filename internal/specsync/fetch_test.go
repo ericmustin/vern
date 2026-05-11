@@ -95,9 +95,9 @@ func (r *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func TestCompare_DetectsDrift(t *testing.T) {
 	upstream := map[string]string{
-		"specification.md":   "upstream spec body\n",
-		"rules/RES-005.md":   "**Rule ID:** RES-005\n",
-		"rules/MET-007.md":   "**Rule ID:** MET-007 (new upstream)\n",
+		"specification.md": "upstream spec body\n",
+		"rules/RES-005.md": "**Rule ID:** RES-005\n",
+		"rules/MET-007.md": "**Rule ID:** MET-007 (new upstream)\n",
 	}
 	rawHost, apiHost, cleanup := fakeUpstream(t, upstream)
 	defer cleanup()
@@ -146,8 +146,8 @@ func TestCompare_DetectsDrift(t *testing.T) {
 
 func TestApply_WritesUpstreamFiles(t *testing.T) {
 	upstream := map[string]string{
-		"specification.md":   "new spec\n",
-		"rules/RES-005.md":   "new RES-005\n",
+		"specification.md": "new spec\n",
+		"rules/RES-005.md": "new RES-005\n",
 	}
 	rawHost, apiHost, cleanup := fakeUpstream(t, upstream)
 	defer cleanup()

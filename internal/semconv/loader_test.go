@@ -57,10 +57,10 @@ groups:
 	}
 
 	wantKeys := map[string]bool{
-		"http.request.method":      true,
+		"http.request.method":       true,
 		"http.response.status_code": true,
-		"service.name":             true,
-		"service.namespace":        true,
+		"service.name":              true,
+		"service.namespace":         true,
 	}
 	for _, k := range cat.AttributeKeys {
 		if !wantKeys[k] {
