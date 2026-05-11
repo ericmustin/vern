@@ -196,6 +196,8 @@ Current `vern review` result:
 | Mappings | Pass | `./configs/esql-mappings.yaml` |
 | Spec version | Pass | `0.1` |
 | Score completeness | Warning | Score is partial |
+| Missing mappings | Pass | `0` missing spec rules |
+| Disabled blockers | Warning | `8` rules mapped but blocked with documented reasons |
 | Workflow config flow | Pass | Uses configured result and annotations indexes |
 | Dashboard config flow | Pass | Uses configured result index |
 | Agent skill config flow | Pass | Uses configured result and signal index patterns |
@@ -211,22 +213,26 @@ Current `vern review` result:
 | `RES-002` | Resource | Important | Enabled | `service.instance.id` is unique across logical resources |
 | `RES-003` | Resource | Important | Enabled | `k8s.pod.uid` is present for Kubernetes telemetry |
 | `SPA-001` | Span | Normal | Enabled | Limited number of `INTERNAL` spans per service |
+| `SPA-002` | Span | Normal | Enabled | Parent span ids exist in the same trace |
 | `SPA-003` | Span | Important | Heuristic | Span-name cardinality; upstream criteria is TODO |
 | `SPA-004` | Span | Important | Enabled | Root spans are not `CLIENT` spans |
 | `SPA-005` | Span | Important | Enabled | Traces do not contain many short-duration spans |
 | `LOG-001` | Log | Important | Enabled | Debug logs are not enabled in production for longer than 14 days |
 | `LOG-002` | Log | Important | Enabled | Log records have severity set |
-| `SPA-002` | Span | Normal | Disabled | Orphan-span query requires validation |
-| `MET-001` | Metric | Important | Disabled | Needs metric cardinality query design |
-| `MET-003` | Metric | Important | Disabled | Needs metric unit consistency query design |
-| `RES-004` | Resource, Log, Span | Important | Missing | Requires semantic-convention placement catalog |
-| `MET-002` | Metric | Important | Missing | Useful metric units |
-| `MET-004` | Metric | Normal | Missing | Histogram bucket consistency |
-| `MET-005` | Metric | Normal | Missing | Metric names should not contain unit names |
-| `MET-006` | Metric | Important | Missing | Metric names should not equal semantic convention attribute keys |
-| `SDK-001` | SDK | Low | Missing | Requires SDK/runtime support metadata |
+| `RES-004` | Resource, Log, Span | Important | Disabled | Requires semantic-convention placement catalog |
+| `MET-001` | Metric | Important | Disabled | Requires generated per-dimension cardinality checks or a metric dimension catalog |
+| `MET-002` | Metric | Important | Disabled | Metric unit metadata lacks safe per-service attribution |
+| `MET-003` | Metric | Important | Disabled | Metric unit consistency lacks safe per-service attribution |
+| `MET-004` | Metric | Normal | Disabled | Histogram bucket boundaries are not exposed generically |
+| `MET-005` | Metric | Normal | Disabled | Name/unit check needs service attribution or global catalog mode |
+| `MET-006` | Metric | Important | Disabled | Requires semantic-convention attribute key catalog |
+| `SDK-001` | SDK | Low | Disabled | Requires SDK/runtime support metadata and support matrix |
 
-Summary: `10` enabled, `1` heuristic, `3` disabled, `6` missing.
+Summary: `11` enabled, `1` heuristic, `8` disabled, `0` missing.
+
+Coverage goal: Vern should have zero missing mappings, enable rules only when
+they can produce accurate service-level rows, and document blockers where full
+coverage is not yet possible.
 
 ## Local Validation
 

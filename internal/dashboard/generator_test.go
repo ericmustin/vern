@@ -31,8 +31,8 @@ func TestGenerate_AllObjectsValidJSON(t *testing.T) {
 		typeCounts[obj["type"].(string)]++
 	}
 
-	if typeCounts["index-pattern"] != 1 {
-		t.Errorf("want 1 index-pattern, got %d", typeCounts["index-pattern"])
+	if typeCounts["index-pattern"] != 2 {
+		t.Errorf("want 2 index-patterns, got %d", typeCounts["index-pattern"])
 	}
 	if typeCounts["search"] < 2 {
 		t.Errorf("want at least 2 saved searches, got %d", typeCounts["search"])
@@ -76,6 +76,33 @@ func TestGenerate_PreservesURLFormatterTemplate(t *testing.T) {
 	}
 	if !strings.Contains(s, "https://github.com/instrumentation-score/spec/blob/main/rules") {
 		t.Error("expected spec base URL in field formatter")
+	}
+	if !strings.Contains(s, "vern-otel-signals") {
+		t.Error("expected signal data view for example links")
+	}
+	if !strings.Contains(s, `/app/dashboards#/view/vern-drilldown`) {
+		t.Error("expected service.name formatter to link to drill-down dashboard")
+	}
+	if !strings.Contains(s, `/app/discover#/?_a=`) {
+		t.Error("expected example formatter to link to Discover")
+	}
+}
+
+func TestGenerate_LensQueriesUseLatestRun(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.ESQL.ResultIndex = "instrumentation-score-results"
+
+	out, _ := Generate(cfg)
+	s := string(out)
+	for _, want := range []string{
+		"COALESCE(TO_DATETIME(run_started_at), evaluated_at)",
+		"LAST(score_num, run_sort)",
+		"LAST(rule_passed, run_sort)",
+		"Latest Per-Rule Breakdown",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("expected latest-run query fragment %q", want)
+		}
 	}
 }
 

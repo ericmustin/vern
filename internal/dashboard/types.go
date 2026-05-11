@@ -28,12 +28,13 @@ const (
 // Saved object IDs that the dashboards reference. Kept stable so re-imports
 // overwrite the same objects (idempotent).
 const (
-	dataViewID     = "vern-instrumentation-score"
-	overviewID     = "vern-overview"
-	drilldownID    = "vern-drilldown"
-	searchTotals   = "vern-search-rules" // typo-safe constants
-	searchTotalsID = "vern-search-totals"
-	searchRulesID  = "vern-search-rules"
+	dataViewID       = "vern-instrumentation-score"
+	signalDataViewID = "vern-otel-signals"
+	overviewID       = "vern-overview"
+	drilldownID      = "vern-drilldown"
+	searchTotals     = "vern-search-rules" // typo-safe constants
+	searchTotalsID   = "vern-search-totals"
+	searchRulesID    = "vern-search-rules"
 
 	lensOverviewTable    = "vern-lens-overview-table"
 	lensOverviewPie      = "vern-lens-overview-pie"
@@ -41,4 +42,5 @@ const (
 	lensOverviewSvcCount = "vern-lens-overview-svc-count"
 	lensDrilldownScore   = "vern-lens-drilldown-score"
 	lensDrilldownPie     = "vern-lens-drilldown-pie"
+	lensRuleBreakdown    = "vern-lens-rule-breakdown"
 )

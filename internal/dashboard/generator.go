@@ -33,10 +33,13 @@ func Generate(cfg *config.Config, summaries ...*coverage.Summary) ([]byte, error
 	}
 
 	b := &builder{
-		resultIndex:  cfg.ESQL.ResultIndex,
-		indexPattern: ensureWildcard(cfg.ESQL.ResultIndex),
-		specBaseURL:  defaultSpecBaseURL,
-		coverage:     cov,
+		resultIndex:         cfg.ESQL.ResultIndex,
+		indexPattern:        ensureWildcard(cfg.ESQL.ResultIndex),
+		signalIndexPattern:  signalIndexPattern(cfg),
+		specBaseURL:         defaultSpecBaseURL,
+		serviceDrilldownURL: serviceDrilldownURL(),
+		exampleDiscoverURL:  exampleDiscoverURL(),
+		coverage:            cov,
 	}
 
 	objects := b.buildAll()
@@ -56,6 +59,22 @@ func ensureWildcard(s string) string {
 		return s
 	}
 	return s + "*"
+}
+
+func signalIndexPattern(cfg *config.Config) string {
+	return strings.Join([]string{
+		cfg.ESQL.IndexPatterns.Traces,
+		cfg.ESQL.IndexPatterns.Logs,
+		cfg.ESQL.IndexPatterns.Metrics,
+	}, ",")
+}
+
+func serviceDrilldownURL() string {
+	return "/app/dashboards#/view/vern-drilldown?_a=(filters:!((meta:(key:service.name,params:(query:'{{value}}')),query:(match_phrase:(service.name:'{{value}}')))))"
+}
+
+func exampleDiscoverURL() string {
+	return "/app/discover#/?_a=(dataSource:(dataViewId:'vern-otel-signals'),query:(language:kuery,query:'_id:\"{{value}}\" OR trace_id:\"{{value}}\" OR span_id:\"{{value}}\" OR parent_span_id:\"{{value}}\" OR resource.attributes.service.instance.id:\"{{value}}\"'))"
 }
 
 // jsonMarshalNoEscape marshals without escaping HTML characters; called by
