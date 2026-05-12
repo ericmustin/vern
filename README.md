@@ -8,16 +8,14 @@ maps implemented rules to ES|QL, generates an Elastic Workflow, imports Kibana
 dashboards, and sets up an Agent Builder assistant that knows how to query the
 score data.
 
-```text
-spec/rules/*.md + configs/esql-mappings.yaml + vern.yaml
-  -> vern setup
-  -> Elastic Workflow + Kibana dashboards + Agent Builder skill/agent
-  -> instrumentation-score-results
-  -> per-service partial score (0-100)
-```
+<p align="center">
+  <img src="docs/images/pipeline.svg" alt="Vern pipeline: 1) vern setup deploys a Workflow, Kibana dashboards, and an Agent Builder skill + agent. 2) The Workflow evaluates rules per service (e.g. RES-005, LOG-002, MET-001) and computes a 0–100 score. 3) Results land in the instrumentation-score-results index. 4) The agent queries that index to answer governance questions like 'which service has the worst score?'">
+</p>
 
-Vern emits a **partial Instrumentation Score**: enabled rules are scored,
-disabled and heuristic rules are reported as coverage metadata.
+> Editable source: [`docs/images/pipeline.excalidraw`](docs/images/pipeline.excalidraw) (open at [excalidraw.com](https://excalidraw.com)).
+
+Vern emits a per-service **Instrumentation Score** (0–100) from the enabled
+rules; disabled and heuristic rules are reported as coverage metadata.
 
 ## Quick Start
 
