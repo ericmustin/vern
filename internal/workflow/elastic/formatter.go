@@ -7,15 +7,9 @@ import (
 	"github.com/ericmustin/vern/internal/config"
 	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/mappings"
+	"github.com/ericmustin/vern/internal/score"
 	"gopkg.in/yaml.v3"
 )
-
-var impactWeights = map[string]int{
-	"Critical":  40,
-	"Important": 30,
-	"Normal":    20,
-	"Low":       10,
-}
 
 func Generate(resolved *mappings.ResolveResult, cfg *config.Config, summaries ...*coverage.Summary) ([]byte, error) {
 	if resolved == nil {
@@ -51,10 +45,26 @@ func Generate(resolved *mappings.ResolveResult, cfg *config.Config, summaries ..
 	wf.Steps = append(wf.Steps, bootstrapStep())
 	wf.Steps = append(wf.Steps, coverageStep(cov))
 
+	// Store the canonical impact so _SCORE_AGGREGATION's exact match counts
+	// every rule with its spec weight; an unknown impact is a mapping bug.
+	var impactErrs []string
 	for _, m := range resolved.Rules {
+		if m.Sensitive {
+			// Scans per-run discovered fields; a scheduled workflow has none
+			//, so the step would be a no-op that reads as a pass.
+			continue
+		}
+		impact, ok := score.NormalizeImpact(m.Impact)
+		if !ok {
+			impactErrs = append(impactErrs, fmt.Sprintf("%s: unknown impact %q", m.SpecRuleID, m.Impact))
+			continue
+		}
 		slug := ruleSlug(m.SpecRuleID)
 		wf.Steps = append(wf.Steps, evalStep(slug, m.ResolvedQuery))
-		wf.Steps = append(wf.Steps, storeStep(slug, m))
+		wf.Steps = append(wf.Steps, storeStep(slug, m, impact))
+	}
+	if len(impactErrs) > 0 {
+		return nil, fmt.Errorf("invalid rule impact:\n  - %s", strings.Join(impactErrs, "\n  - "))
 	}
 
 	if resolved.Aggregation != nil {
@@ -186,8 +196,9 @@ func evalStep(slug, query string) Step {
 // storeStep wraps an elasticsearch.index step in a foreach so we write one
 // document per service-row from the eval step's output. The eval query
 // guarantees a fixed column order: rule_passed, service.name, example, extent.
-// Loop variable in Elastic Workflows Liquid is `foreach.item`.
-func storeStep(slug string, m mappings.ResolvedMapping) Step {
+// Loop variable in Elastic Workflows Liquid is `foreach.item`. impact is the
+// canonical tier (score.NormalizeImpact).
+func storeStep(slug string, m mappings.ResolvedMapping, impact string) Step {
 	return Step{
 		Name:    "store_" + slug,
 		Type:    "foreach",
@@ -199,8 +210,8 @@ func storeStep(slug string, m mappings.ResolvedMapping) Step {
 				"index": "{{ consts.result_index }}",
 				"document": map[string]interface{}{
 					"rule_id":        m.SpecRuleID,
-					"impact":         m.Impact,
-					"weight":         impactWeights[m.Impact],
+					"impact":         impact,
+					"weight":         score.ImpactWeights[impact],
 					"target":         m.Target,
 					"description":    m.Description,
 					"evaluated_at":   "{{ 'now' | date: '%Y-%m-%dT%H:%M:%SZ' }}",

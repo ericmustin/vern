@@ -1,0 +1,8 @@
+rule: RES-003
+cases:
+  pass: { status: evaluated, services: { conf-res-003: true } }
+  fail: { status: evaluated, services: { conf-res-003: false } }
+  # No Kubernetes pod attributes: the rule does not apply.
+  non-k8s: { status: not_applicable }
+  # Workload attributes without a pod describe a workload object, not a pod.
+  workload-only: { status: not_applicable }

@@ -1,0 +1,23 @@
+| EVAL seg = CONCAT(
+    COALESCE(CONCAT("<RS>name<US>", REPLACE(LEFT(MV_CONCAT(TO_STRING(`name`), "; "), 130556), "[<RS><US>]", " ")), ""),
+    COALESCE(CONCAT("<RS>attributes.password<US>", REPLACE(LEFT(MV_CONCAT(TO_STRING(`attributes.password`), "; "), 130556), "[<RS><US>]", " ")), ""))
+| EVAL hit = CASE(
+    COALESCE(TRIM(MV_CONCAT(TO_STRING(`attributes.password`), "; ")) NOT RLIKE <lucene:placeholder>, false), true,
+    seg RLIKE <lucene:email>, true,
+    seg RLIKE <lucene:credit_card>, true,
+    seg RLIKE <lucene:ssn>, true,
+    seg RLIKE <lucene:bearer_token>, true,
+    seg RLIKE <lucene:jwt>, true,
+    seg RLIKE <lucene:api_key>, true,
+    seg RLIKE <lucene:aws_access_key>, true,
+    seg RLIKE <lucene:secret_kv>, true,
+    seg RLIKE <lucene:health_kv>, true,
+    seg RLIKE <lucene:financial_kv>, true,
+    seg RLIKE <lucene:private_key>, true,
+    false)
+| STATS total = COUNT(*), hits = COUNT(*) WHERE hit, example = TOP(seg, 1, "asc") WHERE hit BY resource.attributes.service.name
+| EVAL rule_passed = hits == 0,
+    extent = CASE(total != 0, hits::double / total::double, 0.0),
+    example = CASE(hits == 0, "No sensitive data matched 22 checks", example)
+| RENAME resource.attributes.service.name AS service.name
+| KEEP rule_passed, service.name, example, extent

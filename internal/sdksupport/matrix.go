@@ -71,7 +71,7 @@ func RenderESQLCase(langField, versionField string) string {
 	for _, lang := range langs {
 		sup := Matrix[lang]
 		fmt.Fprintf(&b,
-			"            %s == %q AND TO_INTEGER(SPLIT(COALESCE(%s, \"0\"), \".\")[0]) < %d, false,\n",
+			"            %s == %q AND TO_INTEGER(MV_FIRST(SPLIT(COALESCE(%s, \"0\"), \".\"))) < %d, false,\n",
 			langField, lang, versionField, sup.MinSDKVersionMajor,
 		)
 	}

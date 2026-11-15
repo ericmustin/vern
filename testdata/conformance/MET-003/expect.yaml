@@ -1,0 +1,14 @@
+rule: MET-003
+cases:
+  # One metric name, two series, one unit.
+  pass: { status: evaluated, services: { conf-met-003: true } }
+  # One service emits the metric as "ms" from one scope and "s" from another.
+  fail: { status: evaluated, services: { conf-met-003: false } }
+  # The same metric name is "ms" in service a and "s" in service b: both fail.
+  cross_service: { status: evaluated, services: { conf-met-003-a: false, conf-met-003-b: false } }
+  # The same metric name is "ms" in both services.
+  cross_service_same_unit: { status: evaluated, services: { conf-met-003-a: true, conf-met-003-b: true } }
+  # a and b conflict on one metric; c emits only an unrelated metric and passes.
+  bystander: { status: evaluated, services: { conf-met-003-a: false, conf-met-003-b: false, conf-met-003-c: true } }
+  # "ms" in service a, no unit in service b: the default unit is a different unit.
+  missing_unit: { status: evaluated, services: { conf-met-003-a: false, conf-met-003-b: false } }

@@ -23,7 +23,7 @@
 
 backend: esql
 version: "0.2.0"
-spec_version: "0.1"
+spec_version: "0.1@ef080a8"
 
 rules:
 
@@ -34,13 +34,15 @@ rules:
     description: "service.name is present"
     impact: "Critical"
     target: "Resource"
+    signal: "any"
+    remediation: "Set `OTEL_SERVICE_NAME` (or `service.name` in OTEL_RESOURCE_ATTRIBUTES) for every process."
     query: |
-      FROM {{ .Indices.Traces }} METADATA _id
+      FROM {{ .AllSignals }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | EVAL missing_svc = resource.attributes.service.name IS NULL OR resource.attributes.service.name == ""
       | STATS
           failed = COUNT(*) WHERE missing_svc,
-          example = SAMPLE(_id, 1) WHERE missing_svc,
+          example = SAMPLE(CONCAT(COALESCE(data_stream.type, "?"), " from ", COALESCE(scope.name, "(no scope)")), 1) WHERE missing_svc,
           total = COUNT(*)
             BY resource.attributes.service.name
       | EVAL rule_passed = (failed == 0),
@@ -53,13 +55,15 @@ rules:
     description: "service.instance.id is present"
     impact: "Normal"
     target: "Resource"
+    signal: "any"
+    remediation: "Set `service.instance.id` (OTEL_RESOURCE_ATTRIBUTES or a resource detector) to a stable, unique id per process."
     query: |
-      FROM {{ .Indices.Traces }} METADATA _id
+      FROM {{ .AllSignals }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | EVAL missing_instance = resource.attributes.service.instance.id IS NULL OR resource.attributes.service.instance.id == ""
       | STATS
           failed = COUNT(*) WHERE missing_instance,
-          example = SAMPLE(_id, 1) WHERE missing_instance,
+          example = SAMPLE(CONCAT(COALESCE(data_stream.type, "?"), " from ", COALESCE(scope.name, "(no scope)")), 1) WHERE missing_instance,
           total = COUNT(*)
             BY resource.attributes.service.name
       | EVAL rule_passed = (failed == 0),
@@ -72,30 +76,45 @@ rules:
     description: "service.instance.id is unique across logical resources"
     impact: "Important"
     target: "Resource"
+    signal: "any"
+    remediation: "Make `service.instance.id` unique per running instance; don't hard-code it in shared config."
     notes: >
-      Derives a logical-resource key from k8s pod uid/name, host.name,
-      container.id, and k8s.node.name. ES|QL fails planning when referenced
-      fields are absent, so this conservative native-OTLP mapping avoids
-      less consistently indexed fields such as host.id and service.node.name.
-      An empty key is treated as "@@UNVERIFIABLE@@" and excluded from
-      duplicate detection. A service fails if any of its instance.ids appears
-      with multiple distinct logical resources.
+      A logical resource is the pod when pod identity (k8s.pod.uid or
+      k8s.pod.name) is known, otherwise the host, node or container, as in
+      the spec's example of "different Kubernetes pods". Within one
+      service, an instance.id is duplicated when it is seen with more than
+      one distinct non-empty k8s.pod.uid, k8s.pod.name, host.name or
+      k8s.node.name, or (only on resources with no pod identity) more than
+      one container.id. Attributes are compared one at a time, not as a
+      concatenated key: one pod whose signals carry different attribute
+      subsets (traces with host.name, logs without) is one logical resource
+      (fixture RES-002/same-pod-partial). container.id is ignored inside a
+      pod, so a restarted container that keeps its id is the same pod
+      (fixture RES-002/container-restart). Instances with none of these
+      attributes cannot be verified and pass. Known misses: a sidecar
+      sharing the app's id inside one pod; a pod-only row and a VM-only row
+      sharing an id. Known strict case: a recreated StatefulSet pod (same
+      name, new uid) keeping its id fails. ES|QL fails planning when
+      referenced fields are absent, so this conservative native-OTLP
+      mapping avoids less consistently indexed fields such as host.id and
+      service.node.name.
     query: |
-      FROM {{ .Indices.Traces }}
+      FROM {{ .AllSignals }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND resource.attributes.service.instance.id IS NOT NULL
           AND resource.attributes.service.instance.id != ""
-      | EVAL logical_resource = CONCAT(
-            COALESCE(resource.attributes.k8s.pod.uid, ""), "|",
-            COALESCE(resource.attributes.k8s.pod.name, ""), "|",
-            COALESCE(resource.attributes.host.name, ""), "|",
-            COALESCE(resource.attributes.container.id, ""), "|",
-            COALESCE(resource.attributes.k8s.node.name, ""))
-      | EVAL logical_resource = CASE(logical_resource == "||||", "@@UNVERIFIABLE@@", logical_resource)
-      | STATS distinct_resources = COUNT_DISTINCT(logical_resource),
-              has_unverifiable = MAX(CASE(logical_resource == "@@UNVERIFIABLE@@", 1, 0))
+      | EVAL pod_uid = CASE(resource.attributes.k8s.pod.uid != "", resource.attributes.k8s.pod.uid),
+          pod_name = CASE(resource.attributes.k8s.pod.name != "", resource.attributes.k8s.pod.name),
+          host = CASE(resource.attributes.host.name != "", resource.attributes.host.name),
+          node = CASE(resource.attributes.k8s.node.name != "", resource.attributes.k8s.node.name)
+      | EVAL container = CASE(pod_uid IS NULL AND pod_name IS NULL AND resource.attributes.container.id != "", resource.attributes.container.id)
+      | STATS pod_uids = COUNT_DISTINCT(pod_uid),
+              pod_names = COUNT_DISTINCT(pod_name),
+              hosts = COUNT_DISTINCT(host),
+              nodes = COUNT_DISTINCT(node),
+              containers = COUNT_DISTINCT(container)
               BY resource.attributes.service.name, instance_id = resource.attributes.service.instance.id
-      | EVAL is_dup = (distinct_resources - has_unverifiable) > 1
+      | EVAL is_dup = pod_uids > 1 OR pod_names > 1 OR hosts > 1 OR nodes > 1 OR containers > 1
       | STATS
           failed = COUNT(*) WHERE is_dup,
           example = SAMPLE(instance_id, 1) WHERE is_dup,
@@ -111,22 +130,26 @@ rules:
     description: "k8s.pod.uid is present in Kubernetes telemetry"
     impact: "Important"
     target: "Resource"
+    signal: "any"
+    remediation: "Add `k8s.pod.uid` (Downward API env var or the collector's k8sattributes processor)."
     notes: >
-      Precondition: any of k8s.pod.uid, k8s.pod.name, k8s.namespace.name,
-      or k8s.node.name is present (i.e. it's a k8s workload). Non-k8s
-      services do not contribute violations.
+      Precondition: the resource describes a Kubernetes pod, i.e.
+      k8s.pod.name or k8s.container.name is present; the spec scopes the
+      MUST to "resources associated with telemetry describing Kubernetes
+      pods". Workload-only resources (deployment, statefulset, daemonset,
+      replicaset, job or cronjob name/uid without a pod, as the collector's
+      k8s_cluster receiver emits) describe workload objects, not pods, and
+      do not trigger the rule; neither do k8s.node.name or
+      k8s.namespace.name alone. Non-k8s services do not contribute
+      violations.
     query: |
-      FROM {{ .Indices.Traces }} METADATA _id
+      FROM {{ .AllSignals }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
-          AND COALESCE(
-              resource.attributes.k8s.pod.uid,
-              resource.attributes.k8s.pod.name,
-              resource.attributes.k8s.namespace.name,
-              resource.attributes.k8s.node.name) IS NOT NULL
+          AND COALESCE(resource.attributes.k8s.pod.name, resource.attributes.k8s.container.name) IS NOT NULL
       | EVAL missing_uid = resource.attributes.k8s.pod.uid IS NULL OR resource.attributes.k8s.pod.uid == ""
       | STATS
           failed = COUNT(*) WHERE missing_uid,
-          example = SAMPLE(_id, 1) WHERE missing_uid,
+          example = SAMPLE(CONCAT(COALESCE(data_stream.type, "?"), " from ", COALESCE(scope.name, "(no scope)")), 1) WHERE missing_uid,
           total = COUNT(*)
             BY resource.attributes.service.name
       | EVAL rule_passed = (failed == 0),
@@ -139,27 +162,27 @@ rules:
     description: "Semantic conventions attributes are used at the right level"
     impact: "Important"
     target: "Resource, Log, Span"
+    signal: "any"
+    deviation: "Checks resource-only semconv keys that appear as span or log attributes; span- or log-level keys set on the resource are not checked."
+    remediation: "Move resource-level attributes (e.g. `service.version`, `host.name`) out of span/log attributes into the resource."
     notes: >
-      ES|QL is schema-strict: referencing a column that no document has ever
-      populated in the index mapping is a plan-time verification error, not a
-      runtime "0 rows" result. So a maximalist RES-004 check (every semconv
-      key at every level) fails to plan against most clusters. This narrow
-      tripwire query checks the single highest-signal misplacement we can
-      portably express: `service.version` appearing as a span attribute
-      rather than a resource attribute. The semconv catalog at
-      internal/semconv/placement.go is still generated for future use, but
-      consuming it dynamically requires per-index schema introspection that
-      Vern does not yet do. Widen the EVAL list below if you have confirmed
-      additional misplacements your environment.
+      Flags span and log records whose record-level attributes carry a key
+      that semantic conventions place on the resource only (the full
+      ResourceOnlyKeys list in internal/semconv/placement.go, regenerated by
+      `vern semconv sync`). The resolver renders one CASE branch per key; keys
+      no document has ever carried resolve to null under
+      SET unmapped_fields="nullify" instead of failing to plan. The example
+      is the first misplaced key found on a sampled record, with the signal
+      and instrumentation scope it came from.
     query: |
-      FROM {{ .Indices.Traces }} METADATA _id
+      FROM {{ .Indices.Traces }}, {{ .Indices.Logs }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND resource.attributes.service.name IS NOT NULL
-      | EVAL misplaced = attributes.service.version IS NOT NULL
+      | EVAL misplaced_key = CASE({{ range $i, $k := .MisplacedResourceKeys }}{{ if $i }}, {{ end }}`attributes.{{ $k }}` IS NOT NULL, "{{ $k }}"{{ end }}, null)
       | STATS
-          failed = COUNT(_id) WHERE misplaced,
-          example = SAMPLE(_id, 1) WHERE misplaced,
-          total = COUNT(_id)
+          failed = COUNT(*) WHERE misplaced_key IS NOT NULL,
+          example = SAMPLE(CONCAT(misplaced_key, " on ", COALESCE(data_stream.type, "?"), " from ", COALESCE(scope.name, "(no scope)")), 1) WHERE misplaced_key IS NOT NULL,
+          total = COUNT(*)
             BY resource.attributes.service.name
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
@@ -173,6 +196,8 @@ rules:
     description: "Traces contain a limited number of INTERNAL spans per service"
     impact: "Normal"
     target: "TraceSpan"
+    signal: "traces"
+    remediation: "Instrument meaningful operations only; use span events for fine-grained steps."
     notes: >
       Counts INTERNAL spans per (trace_id, service.name); a service fails
       on traces with more than 10 internal spans. Matches both PascalCase
@@ -198,31 +223,33 @@ rules:
     description: "Traces do not contain orphan spans"
     impact: "Normal"
     target: "TraceSpan"
+    signal: "traces"
+    deviation: "In sample mode, SERVER and CONSUMER spans are not checked: their parents usually live in another service's telemetry."
+    remediation: "Propagate context across async boundaries and make sure parent spans are ended and exported."
     notes: >
-      Groups each trace and service, collects the trace's span_ids and
-      parent_span_ids, then checks the parent id set is a subset of the
-      span id set. This detects traces where any parent_span_id does not
-      exist in the same trace, matching the spec without a self-join.
+      Collects every span_id of a trace across all services, then checks
+      each (parent_span_id, service) reference against that set. A parent
+      that lives in another service of the same trace is not an orphan.
+      A service fails a trace when any of its spans references a parent
+      span_id missing from the trace. Total is the number of traces in
+      which the service has parented spans. The scope filter (environments,
+      service namespaces) selects which spans must have a parent, not which
+      span_ids exist: a parent outside the scope still counts.
     query: |
-      FROM {{ .Indices.Traces }} METADATA _id
-      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
-      | EVAL has_parent = parent_span_id IS NOT NULL AND parent_span_id != ""
-      | STATS
-          span_ids = VALUES(span_id),
-          parent_ids = VALUES(parent_span_id) WHERE has_parent,
-          parented_spans = COUNT(*) WHERE has_parent,
-          example = SAMPLE(_id, 1) WHERE has_parent
-            BY trace_id, resource.attributes.service.name
-      | WHERE parented_spans > 0
-      | EVAL trace_has_orphan = NOT MV_CONTAINS(span_ids, parent_ids)
-      | STATS
-          failed = COUNT(*) WHERE trace_has_orphan,
-          example = SAMPLE(trace_id, 1) WHERE trace_has_orphan,
-          total = COUNT(*)
-            BY resource.attributes.service.name
-      | EVAL rule_passed = (failed == 0),
-          extent = CASE(total != 0, failed::double / total::double, 0.0)
-      | RENAME resource.attributes.service.name AS service.name
+      FROM {{ .Indices.Traces }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}
+      | EVAL svc = COALESCE(resource.attributes.service.name, ""),
+             needs_parent = (true{{ .ScopeFilter }}) AND parent_span_id IS NOT NULL AND parent_span_id != ""{{ if .SampleMode }} AND NOT kind IN ("Server", "Consumer", "SPAN_KIND_SERVER", "SPAN_KIND_CONSUMER"){{ end }},
+             ref = CASE(needs_parent, CONCAT(parent_span_id, "|", svc), null)
+      | STATS ids = VALUES(span_id), refs = VALUES(ref) BY trace_id
+      | MV_EXPAND refs
+      | WHERE refs IS NOT NULL
+      | DISSECT refs "%{parent}|%{svc}"
+      | EVAL orphan = NOT MV_CONTAINS(ids, parent)
+      | STATS bad = MAX(CASE(orphan, 1, 0)) BY trace_id, svc
+      | STATS failed = SUM(bad), example = SAMPLE(trace_id, 1) WHERE bad == 1, total = COUNT(*) BY svc
+      | EVAL rule_passed = (failed == 0), extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME svc AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "SPA-003"
@@ -231,6 +258,11 @@ rules:
     description: "Span names have bound cardinality"
     impact: "Important"
     target: "TraceSpan"
+    signal: "traces"
+    advisory: true
+    heuristic: true
+    deviation: "Spec criteria are TODO; shown for information, not scored."
+    remediation: "Use low-cardinality span names (route templates, not raw URLs or IDs); put variable values in attributes."
     notes: >
       Spec criteria is TODO; this is the heuristic used in the peek
       reference (useInstrumentationScore.ts): pass if total spans < 50
@@ -256,17 +288,19 @@ rules:
     description: "Root spans are not CLIENT spans"
     impact: "Important"
     target: "TraceSpan"
+    signal: "traces"
+    remediation: "Wrap outbound calls made outside a request (jobs, startup) in a SERVER, CONSUMER or INTERNAL span."
     notes: >
       A root document is one with no parent_span_id; a CLIENT root is a
       violation. Matches both "Client" and "SPAN_KIND_CLIENT".
     query: |
-      FROM {{ .Indices.Traces }} METADATA _id
+      FROM {{ .Indices.Traces }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND (parent_span_id IS NULL OR parent_span_id == "")
       | EVAL is_client_root = kind IN ("Client", "SPAN_KIND_CLIENT")
       | STATS
           failed = COUNT(*) WHERE is_client_root,
-          example = SAMPLE(_id, 1) WHERE is_client_root,
+          example = SAMPLE(trace_id, 1) WHERE is_client_root,
           total = COUNT(*)
             BY resource.attributes.service.name
       | EVAL rule_passed = (failed == 0),
@@ -279,6 +313,9 @@ rules:
     description: "Traces do not contain a high number of short duration spans"
     impact: "Important"
     target: "TraceSpan"
+    signal: "traces"
+    deviation: "Counts short spans per trace and service; the spec counts per trace."
+    remediation: "Disable or sample out instrumentations that emit many sub-5 ms spans per trace."
     notes: >
       Conservative implementation of the spec criteria: a trace fails if it
       has more than 20 spans of any kind under 5ms. duration is in nanoseconds;
@@ -307,23 +344,28 @@ rules:
     description: "Debug-level logs are not enabled in production for >14 days"
     impact: "Important"
     target: "Log"
+    signal: "logs"
+    min_observation: "336h"
+    deviation: "Measures the time between the first and last production DEBUG record in a 30-day window. In live mode (no sample) the 14-day observation requirement is not enforced, so services with less than 14 days of retained logs can pass."
+    remediation: "Turn DEBUG logging off in production, or limit it to short troubleshooting windows."
     notes: >
-      Looks back 14 days. A service is in production if its
+      Looks back 30 days. A service is in production if its
       resource.attributes.deployment.environment.name starts with "prod"
-      (case-insensitive).
+      (case-insensitive). The service fails when its first and last DEBUG
+      records in production are more than 14 days (336 hours) apart; hours,
+      not days, because DATE_DIFF truncates. Needs at least 14 days of data
+      (min_observation) to be assessable.
     query: |
-      FROM {{ .Indices.Logs }} METADATA _id
-      | WHERE @timestamp > NOW() - 14d{{ .ScopeFilter }}
-      | EVAL is_prod = STARTS_WITH(TO_LOWER(COALESCE(resource.attributes.deployment.environment.name, "")), "prod"),
-          is_debug = TO_UPPER(COALESCE(severity_text, "")) == "DEBUG"
-      | EVAL violation = is_prod AND is_debug
-      | STATS
-          failed = COUNT(*) WHERE violation,
-          example = SAMPLE(_id, 1) WHERE violation,
-          total = COUNT(*)
-            BY resource.attributes.service.name
-      | EVAL rule_passed = (failed == 0),
-          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      FROM {{ .Indices.Logs }}
+      | WHERE @timestamp > NOW() - 30d{{ .ScopeFilter }} AND observed_timestamp IS NOT NULL
+          AND STARTS_WITH(TO_LOWER(COALESCE(resource.attributes.deployment.environment.name, "")), "prod")
+      | EVAL is_debug = TO_UPPER(COALESCE(severity_text, "")) == "DEBUG"
+      | STATS first_debug = MIN(@timestamp) WHERE is_debug, last_debug = MAX(@timestamp) WHERE is_debug
+          BY resource.attributes.service.name
+      | EVAL debug_hours = DATE_DIFF("hour", first_debug, last_debug)
+      | EVAL rule_passed = debug_hours IS NULL OR debug_hours <= 336,
+             extent = CASE(rule_passed, 0.0, 1.0),
+             example = CASE(debug_hours IS NULL, null, CONCAT("DEBUG in production across ", TO_STRING(debug_hours / 24), " days ", TO_STRING(debug_hours % 24), " hours"))
       | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
 
@@ -332,17 +374,17 @@ rules:
     description: "Log records have severityNumber set"
     impact: "Important"
     target: "Log"
+    signal: "logs"
+    deviation: "Spec description says severityNumber, criteria say severity.text = UNSET; both are checked."
+    remediation: "Make sure your logging bridge maps log levels to OTel `severityNumber`."
     query: |
-      FROM {{ .Indices.Logs }} METADATA _id
+      FROM {{ .Indices.Logs }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
-      | EVAL no_sev = severity_text IS NULL
-          OR severity_text == ""
-          OR TO_UPPER(severity_text) == "UNSET"
-          OR severity_number IS NULL
-          OR severity_number == 0
+          AND observed_timestamp IS NOT NULL
+      | EVAL no_sev = severity_number IS NULL OR severity_number == 0 OR TO_UPPER(COALESCE(severity_text, "")) == "UNSET"
       | STATS
           logs_wo_severity = COUNT(*) WHERE no_sev,
-          example = SAMPLE(_id, 1) WHERE no_sev,
+          example = SAMPLE(CONCAT("scope: ", COALESCE(scope.name, "(none)")), 1) WHERE no_sev,
           total = COUNT(*)
             BY resource.attributes.service.name
       | EVAL rule_passed = (logs_wo_severity == 0),
@@ -360,24 +402,38 @@ rules:
   #     The dimension values live inside the `dimensions` JSON blob, so we
   #     extract service.name with GROK.
   #   - `TS` does not support COUNT(*); aggregations must reference a field.
+  #   - metric_name is the document field path, i.e. `metrics.<otel name>`.
+  #   - TS_INFO's `unit` column comes from the field mapping's meta.unit, one
+  #     value per metric field per index, not per series. The collector's
+  #     elasticsearch exporter leaves it null on 9.5; the native OTLP endpoint
+  #     fills it from whichever document first created the field. The
+  #     per-series unit is the `unit` dimension inside `dimensions`, so
+  #     MET-002/MET-003 GROK it out and do not read TS_INFO's column: a series
+  #     with no `unit` dimension has no unit.
   # MET-004 (histogram bucket consistency) stays disabled because histogram
-  # bucket boundaries are not exposed via TS_INFO / METRICS_INFO as of 9.4.
+  # bucket boundaries are not exposed via TS_INFO / METRICS_INFO.
 
   - spec_rule_id: "MET-001"
     enabled: true
     description: "Metric attributes have bound cardinality"
     impact: "Important"
     target: "Metric"
+    signal: "metrics"
+    heuristic: true
+    deviation: "Counts time series per metric, an upper bound on per-attribute cardinality."
+    remediation: "Remove unbounded values (IDs, URLs, timestamps) from metric attributes, or drop them with views."
     notes: >
       The spec requires cardinality per (metric name, attribute key) within
       a 1-hour window. ES|QL's TS_INFO returns one row per unique time series
       (i.e. one row per unique combination of metric_name + all dimension
-      values), so COUNT(metric_name) BY metric_name, service is a tight upper
-      bound on per-metric attribute cardinality — when the series count
-      exceeds the threshold, at least one attribute key MUST be over the
-      threshold too. This is more conservative than the spec but cheaper to
-      evaluate than enumerating per-attribute COUNT_DISTINCT, and it doesn't
-      depend on an attribute allowlist.
+      values), so COUNT(metric_name) BY metric_name, service is an upper
+      bound on per-metric attribute cardinality: when the series count is
+      below the threshold, every attribute key is too. A metric fails when
+      its series count reaches or exceeds the threshold (>=, since the spec
+      requires fewer than 10,000 values), which can also flag a metric whose
+      attribute keys are each below it. This is more conservative than the
+      spec but cheaper to evaluate than enumerating per-attribute
+      COUNT_DISTINCT, and it doesn't depend on an attribute allowlist.
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - 1h{{ .ScopeFilter }}
@@ -385,7 +441,7 @@ rules:
       | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
       | WHERE svc IS NOT NULL
       | STATS series_count = COUNT(metric_name) BY metric_name, svc
-      | EVAL over_threshold = series_count > {{ .CardinalityThreshold }}
+      | EVAL over_threshold = series_count >= {{ .CardinalityThreshold }}
       | STATS
           failed = COUNT(metric_name) WHERE over_threshold,
           example = SAMPLE(metric_name, 1) WHERE over_threshold,
@@ -401,17 +457,27 @@ rules:
     description: "Metrics have useful metric units"
     impact: "Important"
     target: "Metric"
+    signal: "metrics"
+    deviation: "UCUM validity is not checked; any non-empty unit passes."
+    remediation: "Declare a UCUM unit (e.g. `s`, `ms`, `By`, `{request}`) when creating the instrument."
     notes: >
-      Flags metrics whose declared unit is NULL, empty, or "1" (dimensionless).
-      The spec calls "1" out as a default-non-useful unit. This is enforced
-      per (metric_name, service.name) pair so the score is service-attributable.
+      Flags metrics whose declared unit is NULL or empty. The spec requires a
+      non-default unit compliant with UCUM; OTel's default unit is the empty
+      string, and "1" is UCUM's dimensionless unit, so "1" passes. This is
+      enforced per (metric_name, service.name) pair so the score is
+      service-attributable. The unit is the series' `unit` dimension only:
+      TS_INFO's `unit` column is the field's mapping meta, which the native
+      OTLP endpoint sets from the first document, so falling back to it let a
+      unitless series pass when another service declared a unit for the same
+      metric name (fixture MET-002/same_name_no_unit).
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | TS_INFO
       | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
       | WHERE svc IS NOT NULL
-      | EVAL missing_unit = unit IS NULL OR unit == "" OR unit == "1"
+      | GROK dimensions "\"unit\":\"%{DATA:dim_unit}\""
+      | EVAL missing_unit = dim_unit IS NULL OR dim_unit == ""
       | STATS
           failed = COUNT(metric_name) WHERE missing_unit,
           example = SAMPLE(metric_name, 1) WHERE missing_unit,
@@ -427,38 +493,58 @@ rules:
     description: "Metric names are consistently associated with the same metric unit"
     impact: "Important"
     target: "Metric"
+    signal: "metrics"
+    remediation: "Use one unit per metric name across all services and versions."
     notes: >
-      Per (metric_name, service.name) over the past 14 days, the spec window:
-      every time series sharing a metric_name MUST have the same unit. A
-      service fails when any of its metrics emits multiple units for the
-      same metric_name.
+      Over the past 14 days, the spec window, every time series sharing a
+      metric_name MUST have the same unit, across all services. Units are
+      collected per metric_name over every service, then each metric is
+      expanded to one row per service that emits it. A service fails when any
+      metric it emits has more than one unit anywhere, so both services of a
+      cross-service conflict fail (fixture MET-003/cross_service, which the
+      earlier per-service grouping passed). A series with no `unit` dimension
+      (no unit, or the empty default) counts as the unit "(none)", so "ms" in
+      one service and no unit in another conflict (fixture
+      MET-003/missing_unit). TS_INFO's `unit` column is not read: it is the
+      field's mapping meta, set from the first document, and would give the
+      unitless series the other service's unit. Extent is the share of the
+      service's metric names that conflict; example names one conflicting
+      metric, its units and the services that emit it (cut to 256
+      characters). The scope filter (environments, service
+      namespaces) applies before grouping: units from services outside the
+      scope are not compared.
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - 14d{{ .ScopeFilter }}
       | TS_INFO
       | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
       | WHERE svc IS NOT NULL
-      | STATS unit_count = COUNT_DISTINCT(unit) BY metric_name, svc
-      | EVAL inconsistent = unit_count > 1
+      | GROK dimensions "\"unit\":\"%{DATA:dim_unit}\""
+      | EVAL unit = CASE(dim_unit IS NULL OR dim_unit == "", "(none)", dim_unit)
+      | STATS units = VALUES(unit), svcs = VALUES(svc) BY metric_name
+      | EVAL inconsistent = MV_COUNT(units) > 1,
+          otel_name = CASE(STARTS_WITH(metric_name, "metrics."), SUBSTRING(metric_name, 9), metric_name),
+          detail = LEFT(CONCAT(otel_name, " has units ", MV_CONCAT(MV_SORT(units), ", "), " (", MV_CONCAT(MV_SORT(svcs), ", "), ")"), 256)
+      | MV_EXPAND svcs
       | STATS
           failed = COUNT(metric_name) WHERE inconsistent,
-          example = SAMPLE(metric_name, 1) WHERE inconsistent,
+          example = SAMPLE(detail, 1) WHERE inconsistent,
           total = COUNT(metric_name)
-            BY svc
+            BY svcs
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
-      | RENAME svc AS `service.name`
+      | RENAME svcs AS `service.name`
       | KEEP rule_passed, service.name, example, extent
 
   - spec_rule_id: "MET-004"
     enabled: false
-    status: "blocked: histogram bucket boundaries are not surfaced by TS_INFO/METRICS_INFO in 9.4"
+    status: "blocked: histogram bucket boundaries are not surfaced by TS_INFO/METRICS_INFO"
     description: "Histogram metrics consistently use the same histogram buckets per metric name"
     impact: "Normal"
     target: "Metric"
     notes: >
-      Bucket boundary metadata is not exposed by any ES|QL command in the
-      9.4 timeframe, including PROMQL preview. Revisit when histogram
+      Bucket boundary metadata is not exposed by any ES|QL command
+      (TS_INFO, METRICS_INFO, PROMQL preview). Revisit when histogram
       bucket lists become introspectable (or when Vern adds an OTLP-direct
       ingestion path).
     query: |
@@ -473,6 +559,8 @@ rules:
     description: "Metric names do not contain the name of the metric unit"
     impact: "Normal"
     target: "Metric"
+    signal: "metrics"
+    remediation: "Remove the unit from the metric name and declare it as the instrument's unit."
     notes: >
       Common violations: metrics named `*.seconds`, `*.bytes`, `*.percent`
       when the unit is `s`, `By`, `%`. The check is case-insensitive on the
@@ -487,7 +575,7 @@ rules:
       | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
       | WHERE svc IS NOT NULL
       | EVAL lower_name = TO_LOWER(metric_name),
-          contains_unit_word = lower_name RLIKE ".*[._](seconds?|milliseconds?|microseconds?|nanoseconds?|bytes?|kilobytes?|megabytes?|gigabytes?|percent(age)?)$"
+          contains_unit_word = lower_name RLIKE ".*[._](seconds?|milliseconds?|microseconds?|nanoseconds?|bytes?|kilobytes?|megabytes?|gigabytes?|percent(age)?)([._].*)?"
       | STATS
           failed = COUNT(metric_name) WHERE contains_unit_word,
           example = SAMPLE(metric_name, 1) WHERE contains_unit_word,
@@ -503,6 +591,8 @@ rules:
     description: "Metric names do not equal semantic convention attribute keys"
     impact: "Important"
     target: "Metric"
+    signal: "metrics"
+    remediation: "Rename metrics so they don't reuse semantic-convention attribute keys."
     notes: >
       Vern's vendored semantic-convention catalog (internal/semconv,
       regenerated via `vern semconv sync`) has ~800 attribute keys, which
@@ -510,14 +600,17 @@ rules:
       length. MET-006 uses a curated subset (see
       internal/semconv/met006_keys.go) of the most-likely-to-be-misused
       keys: identity attrs (service/host/k8s), HTTP/DB/RPC/messaging, plus
-      common dimension keys. Edit MET006CuratedKeys to widen.
+      common dimension keys. Edit MET006CuratedKeys to widen. TS_INFO
+      reports OTel-native metric names as `metrics.<name>`; the prefix is
+      stripped before comparing.
     query: |
       TS {{ .Indices.Metrics }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
       | TS_INFO
       | GROK dimensions "resource.attributes.service.name\":\"%{DATA:svc}\""
       | WHERE svc IS NOT NULL
-      | EVAL is_semconv_key = metric_name IN ({{ .MET006SemconvKeys }})
+      | EVAL otel_name = CASE(STARTS_WITH(metric_name, "metrics."), SUBSTRING(metric_name, 9), metric_name),
+          is_semconv_key = otel_name IN ({{ .MET006SemconvKeys }})
       | STATS
           failed = COUNT(metric_name) WHERE is_semconv_key,
           example = SAMPLE(metric_name, 1) WHERE is_semconv_key,
@@ -537,6 +630,8 @@ rules:
     description: "Dependencies (language and runtime) are supported by the SDK"
     impact: "Low"
     target: "SDK"
+    signal: "any"
+    remediation: "Upgrade the language runtime and OTel SDK to versions the SDK supports."
     notes: >
       Opt-in (filters.enable_sdk_rules: true). Compares observed
       telemetry.sdk.language and telemetry.sdk.version resource attributes
@@ -545,7 +640,7 @@ rules:
       gaps here). Services without telemetry.sdk.language do not contribute
       to the rule.
     query: |
-      FROM {{ .Indices.Traces }} METADATA _id
+      FROM {{ .AllSignals }}
       | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
           AND resource.attributes.service.name IS NOT NULL
           AND resource.attributes.telemetry.sdk.language IS NOT NULL
@@ -553,13 +648,219 @@ rules:
       | EVAL is_unsupported = NOT is_supported
       | STATS
           failed = COUNT(*) WHERE is_unsupported,
-          example = SAMPLE(_id, 1) WHERE is_unsupported,
+          example = SAMPLE(CONCAT(COALESCE(data_stream.type, "?"), " from ", COALESCE(scope.name, "(no scope)")), 1) WHERE is_unsupported,
           total = COUNT(*)
             BY resource.attributes.service.name
       | EVAL rule_passed = (failed == 0),
           extent = CASE(total != 0, failed::double / total::double, 0.0)
       | RENAME resource.attributes.service.name AS service.name
       | KEEP rule_passed, service.name, example, extent
+
+  # ─── Rules added in spec@ef080a8 ──────────────────────────────
+
+  - spec_rule_id: "RES-006"
+    enabled: true
+    description: "service.criticality uses the canonical form of its well-known values"
+    impact: "Normal"
+    target: "Resource"
+    signal: "any"
+    remediation: "Use the lowercase canonical value (`critical`, `high`, `medium`, `low`) for `service.criticality`."
+    notes: >
+      Rows without service.criticality are ignored. A value fails when, after
+      TRIM and case-folding, it equals critical/high/medium/low but is not
+      already exactly that lowercase string. Custom values pass, per the spec.
+      A multi-valued service.criticality is expanded so each value is checked
+      (TRIM/TO_LOWER return null on multi-valued input).
+    query: |
+      FROM {{ .AllSignals }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      | EVAL c = resource.attributes.service.criticality
+      | WHERE c IS NOT NULL
+      | MV_EXPAND c
+      | EVAL canon = TO_LOWER(TRIM(c)),
+          non_canonical = canon IN ("critical", "high", "medium", "low") AND c != canon
+      | STATS
+          failed = COUNT(*) WHERE non_canonical,
+          example = SAMPLE(c, 1) WHERE non_canonical,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "RES-007"
+    enabled: true
+    description: "deployment.environment.name is present"
+    impact: "Important"
+    target: "Resource"
+    signal: "any"
+    remediation: "Set `deployment.environment.name`, e.g. `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production`."
+    query: |
+      FROM {{ .AllSignals }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      | EVAL missing_env = resource.attributes.deployment.environment.name IS NULL OR resource.attributes.deployment.environment.name == ""
+      | STATS
+          failed = COUNT(*) WHERE missing_env,
+          example = SAMPLE(CONCAT(COALESCE(data_stream.type, "?"), " from ", COALESCE(scope.name, "(no scope)")), 1) WHERE missing_env,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "MET-007"
+    enabled: true
+    description: "Metrics do not carry volatile or verbose resource attributes"
+    impact: "Normal"
+    target: "Metric"
+    signal: "metrics"
+    remediation: "Drop `host.ip`, `host.mac`, `process.command_args`, `process.command_line`, `process.runtime.description` and `os.description` from metric resources."
+    notes: >
+      Fails when a metric document's resource attributes include any of
+      host.ip, host.mac, process.command_args, process.command_line,
+      process.runtime.description, os.description. Example is the first
+      offending key found. Uses FROM (not TS) since only resource attributes
+      are inspected.
+    query: |
+      FROM {{ .Indices.Metrics }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      | EVAL bad_key = CASE(
+          resource.attributes.host.ip IS NOT NULL, "host.ip",
+          resource.attributes.host.mac IS NOT NULL, "host.mac",
+          resource.attributes.process.command_args IS NOT NULL, "process.command_args",
+          resource.attributes.process.command_line IS NOT NULL, "process.command_line",
+          resource.attributes.process.runtime.description IS NOT NULL, "process.runtime.description",
+          resource.attributes.os.description IS NOT NULL, "os.description",
+          null),
+          has_bad = bad_key IS NOT NULL
+      | STATS
+          failed = COUNT(*) WHERE has_bad,
+          example = SAMPLE(bad_key, 1) WHERE has_bad,
+          total = COUNT(*)
+            BY resource.attributes.service.name
+      | EVAL rule_passed = (failed == 0),
+          extent = CASE(total != 0, failed::double / total::double, 0.0)
+      | RENAME resource.attributes.service.name AS service.name
+      | KEEP rule_passed, service.name, example, extent
+
+  - spec_rule_id: "RES-010"
+    enabled: true
+    sensitive: true
+    scan_groups: [Resource]
+    heuristic: true
+    description: "Resource attribute values do not contain sensitive data"
+    impact: "Critical"
+    target: "Resource"
+    signal: "any"
+    deviation: "Best-effort pattern detection; the spec's list is open-ended and no detector set is complete. Credit card numbers are matched by brand prefix and length, with no Luhn check. Placeholder values (masks such as ****, [REDACTED], ${ENV}, null, none, hidden) under a sensitive key or in a key-value pair do not count. At most 32 sensitive-key fields are key-checked per rule. Resource values repeat on every document, so extent is the share of the service's spans, span events, log records and metric documents that carry a match."
+    remediation: "Keep secrets and personal data out of resource attributes: pass credentials through files or variables the SDK does not record (not `process.command_args`), and drop or hash user identifiers."
+    notes: >
+      Generated by the sensitiveQuery template function (internal/sensitive):
+      per document, one string of <field>U+001F<value> segments joined by
+      U+001E over the run's discovered fields of the rule's scan_groups
+      (joined without repeats, priority-ordered, capped at 1000 per query;
+      multi-values joined by "; "; each value scanned up to a per-query
+      character budget that keeps CONCAT under 1 MiB),
+      tested by one RLIKE per
+      detector, plus a key-name check for sensitive-key fields. The example is
+      the raw segment string of one matching document; it carries the matched
+      value, so the runner redacts it (evaluate.Run) before it reaches any report.
+      Scans the Resource field group across traces, logs and metrics.
+    query: |
+      FROM {{ .AllSignals }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      {{ sensitiveQuery .ScanFields }}
+
+  - spec_rule_id: "SPA-006"
+    enabled: true
+    sensitive: true
+    scan_groups: [Span, SpanEvent, Scope]
+    heuristic: true
+    description: "Spans do not contain sensitive data"
+    impact: "Critical"
+    target: "Span"
+    signal: "traces"
+    deviation: "Best-effort pattern detection; the spec's list is open-ended and no detector set is complete. Credit card numbers are matched by brand prefix and length, with no Luhn check. Placeholder values (masks such as ****, [REDACTED], ${ENV}, null, none, hidden) under a sensitive key or in a key-value pair do not count. At most 32 sensitive-key fields are key-checked per rule. Span events are stored as log documents (no observed_timestamp); they are scanned here together with spans, so log-record fields that span events lack come back empty."
+    remediation: "Sanitize span names, attributes, URLs and exception events before export (SDK sanitizers or the collector `redaction`/`transform` processor), and do not record authorization headers, cookies or request payloads."
+    notes: >
+      Generated by the sensitiveQuery template function (internal/sensitive):
+      per document, one string of <field>U+001F<value> segments joined by
+      U+001E over the run's discovered fields of the rule's scan_groups
+      (joined without repeats, priority-ordered, capped at 1000 per query;
+      multi-values joined by "; "; each value scanned up to a per-query
+      character budget that keeps CONCAT under 1 MiB),
+      tested by one RLIKE per
+      detector, plus a key-name check for sensitive-key fields. The example is
+      the raw segment string of one matching document; it carries the matched
+      value, so the runner redacts it (evaluate.Run) before it reaches any report.
+      Scans span documents and span-event documents (log documents without
+      observed_timestamp) over the Span, SpanEvent and Scope field groups.
+    query: |
+      FROM {{ .Indices.Traces }},{{ .Indices.Logs }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+          AND (data_stream.type == "traces" OR observed_timestamp IS NULL)
+      {{ sensitiveQuery .ScanFields }}
+
+  - spec_rule_id: "LOG-003"
+    enabled: true
+    sensitive: true
+    scan_groups: [Log, Scope]
+    heuristic: true
+    description: "Log records do not contain sensitive data"
+    impact: "Critical"
+    target: "Log"
+    signal: "logs"
+    deviation: "Best-effort pattern detection; the spec's list is open-ended and no detector set is complete. Credit card numbers are matched by brand prefix and length, with no Luhn check. Placeholder values (masks such as ****, [REDACTED], ${ENV}, null, none, hidden) under a sensitive key or in a key-value pair do not count. At most 32 sensitive-key fields are key-checked per rule. Span-event documents in the logs index are checked by SPA-006, not here."
+    remediation: "Scrub log bodies and attributes before export (masking in the logging library or the collector `redaction`/`transform` processor); never log credentials or full request payloads."
+    notes: >
+      Generated by the sensitiveQuery template function (internal/sensitive):
+      per document, one string of <field>U+001F<value> segments joined by
+      U+001E over the run's discovered fields of the rule's scan_groups
+      (joined without repeats, priority-ordered, capped at 1000 per query;
+      multi-values joined by "; "; each value scanned up to a per-query
+      character budget that keeps CONCAT under 1 MiB),
+      tested by one RLIKE per
+      detector, plus a key-name check for sensitive-key fields. The example is
+      the raw segment string of one matching document; it carries the matched
+      value, so the runner redacts it (evaluate.Run) before it reaches any report.
+      Scans log-record documents (observed_timestamp set, as in LOG-001 and
+      LOG-002) over the Log and Scope field groups.
+    query: |
+      FROM {{ .Indices.Logs }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+          AND observed_timestamp IS NOT NULL
+      {{ sensitiveQuery .ScanFields }}
+
+  - spec_rule_id: "MET-008"
+    enabled: true
+    sensitive: true
+    scan_groups: [Metric, Scope, MetricNames]
+    heuristic: true
+    description: "Metrics do not contain sensitive data"
+    impact: "Critical"
+    target: "Metric"
+    signal: "metrics"
+    deviation: "Best-effort pattern detection; the spec's list is open-ended and no detector set is complete. Credit card numbers are matched by brand prefix and length, with no Luhn check. Placeholder values (masks such as ****, [REDACTED], ${ENV}, null, none, hidden) under a sensitive key or in a key-value pair do not count. At most 32 sensitive-key fields are key-checked per rule. Metric names exist only as field names: they are matched against the detectors in Go and a match counts on every metric document that carries the metric. Metric descriptions and exemplar attributes are not stored, so they are not checked."
+    remediation: "Keep personal data and secrets out of metric names, units and data point attributes; use bounded, non-identifying attribute values."
+    notes: >
+      Generated by the sensitiveQuery template function (internal/sensitive):
+      per document, one string of <field>U+001F<value> segments joined by
+      U+001E over the run's discovered fields of the rule's scan_groups
+      (joined without repeats, priority-ordered, capped at 1000 per query;
+      multi-values joined by "; "; each value scanned up to a per-query
+      character budget that keeps CONCAT under 1 MiB),
+      tested by one RLIKE per
+      detector, plus a key-name check for sensitive-key fields. The example is
+      the raw segment string of one matching document; it carries the matched
+      value, so the runner redacts it (evaluate.Run) before it reaches any report.
+      Scans metric documents over the Metric and Scope field groups, plus a
+      metric_name segment for each discovered metric name a detector matches.
+    query: |
+      FROM {{ .Indices.Metrics }}
+      | WHERE @timestamp > NOW() - {{ .TimeWindow }}{{ .ScopeFilter }}
+      {{ sensitiveMetricQuery .ScanFields .ScanMetricNames }}
 
   # ─── Score Aggregation (final step in workflow) ───────────────
 
@@ -569,14 +870,15 @@ rules:
     description: "Calculate the final instrumentation score per service"
     notes: >
       Aggregates per-service rule results written by store_* steps over
-      the configured score lookback (excluding bootstrap and coverage rows). Score
+      the configured score lookback (excluding bootstrap and coverage rows,
+      and advisory rules, which are shown but not scored). Score
       formula matches the spec:
       Σ(P_i * W_i) / Σ(T_i * W_i) * 100, weights
       Critical=40, Important=30, Normal=20, Low=10.
     query: |
       FROM {{ .ResultIndex }}
       | WHERE evaluated_at > NOW() - {{ .ScoreLookback }}
-          AND NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL", "_COVERAGE"))
+          AND NOT (rule_id IN ("_BOOTSTRAP", "_TOTAL", "_COVERAGE"{{ if .AdvisoryRuleIDs }}, {{ .AdvisoryRuleIDs }}{{ end }}))
           AND service.name != "_schema_init"
       | STATS
           critical_passed = SUM(CASE(impact == "Critical" AND rule_passed == true, 1, 0)),

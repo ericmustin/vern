@@ -1,0 +1,1 @@
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"conf-met-005"}}]},"scopeMetrics":[{"scope":{"name":"conformance"},"metrics":[{"name":"conf.met005.Payload_Bytes","unit":"By","gauge":{"dataPoints":[{"timeUnixNano":"1794672000000000000","asDouble":512.0}]}}]}]}]}

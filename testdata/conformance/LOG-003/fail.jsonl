@@ -1,0 +1,1 @@
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"conf-log-003"}}]},"scopeLogs":[{"scope":{"name":"conformance"},"logRecords":[{"timeUnixNano":"1794672000000000000","observedTimeUnixNano":"1794672000000000000","body":{"stringValue":"Payment processed for card 4111 1111 1111 1111"},"severityNumber":9,"severityText":"INFO"}]}]}]}

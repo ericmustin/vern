@@ -1,0 +1,7 @@
+rule: MET-001
+# The query reads NOW() - 1h, so every point lies inside the last hour.
+cases:
+  # 3 series for one metric.
+  pass: { status: evaluated, services: { conf-met-001: true } }
+  # Exactly 10,000 user.id values for one metric: the spec requires fewer.
+  fail: { status: evaluated, services: { conf-met-001: false } }

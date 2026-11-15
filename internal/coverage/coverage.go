@@ -54,7 +54,7 @@ func Build(specRules []SpecRule, mf *mappings.MappingsFile) Summary {
 		if mapping, ok := byID[spec.ID]; ok {
 			summary.ImplementedRules = append(summary.ImplementedRules, spec.ID)
 			switch {
-			case isHeuristic(mapping):
+			case mapping.Enabled && isHeuristic(mapping):
 				rule.Status = "heuristic"
 				rule.Reason = strings.TrimSpace(mapping.Status)
 				summary.EnabledRules = append(summary.EnabledRules, spec.ID)
@@ -86,6 +86,9 @@ func Build(specRules []SpecRule, mf *mappings.MappingsFile) Summary {
 }
 
 func isHeuristic(rule mappings.RuleMapping) bool {
+	if rule.Heuristic {
+		return true
+	}
 	status := strings.ToLower(strings.TrimSpace(rule.Status))
 	if status == "heuristic" {
 		return true

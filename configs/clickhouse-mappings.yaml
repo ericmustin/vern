@@ -1,0 +1,187 @@
+# clickhouse-mappings.yaml — ClickHouse SQL query mappings for the Instrumentation Score spec.
+#
+# Each rule maps to a ClickHouse SQL query that returns the uniform shape:
+#   rule_passed (bool), service.name (string), example (string), extent (float, 0.0-1.0)
+#
+# Templates use Go text/template — variables are resolved by `vern evaluate`
+# from the `clickhouse:` block of vern.yaml.
+#
+# Schema assumptions: the OpenTelemetry collector ClickHouse exporter default
+# tables — otel_traces, otel_logs, otel_metrics_sum (per metric type).
+#   service.name        -> top-level `ServiceName` column (LowCardinality(String))
+#   resource attributes -> ResourceAttributes Map(String, String)
+#   span attributes     -> SpanAttributes Map(String, String)
+#   metric attributes   -> Attributes Map (per data point, on metric tables)
+#   trace timestamp     -> `Timestamp` DateTime64(9)
+#   log timestamp       -> `Timestamp` DateTime64(9)
+#   metric timestamp    -> `TimeUnix` DateTime64(9)
+#
+# Maps 6 of the spec's 26 rules.
+
+backend: clickhouse
+version: "0.1.0"
+spec_version: "0.1"
+
+rules:
+
+  # ─── Resource Rules ───────────────────────────────────────────
+
+  - spec_rule_id: "RES-005"
+    enabled: true
+    description: "service.name is present"
+    impact: "Critical"
+    target: "Resource"
+    deviation: "Checks traces only; the ES|QL implementation checks traces, logs and metrics."
+    query: |
+      SELECT
+        if(ServiceName = '', '__unknown__', ServiceName) AS `service.name`,
+        countIf(ServiceName = '') = 0 AS rule_passed,
+        if(count() = 0, 0.0, toFloat64(countIf(ServiceName = '')) / toFloat64(count())) AS extent,
+        coalesce(anyIf(TraceId, ServiceName = ''), '') AS example
+      FROM {{ .Indices.Traces }}
+      WHERE Timestamp > now() - INTERVAL {{ .TimeWindow }}
+      GROUP BY ServiceName
+      FORMAT JSONEachRow
+
+  - spec_rule_id: "RES-001"
+    enabled: true
+    description: "service.instance.id is present"
+    impact: "Normal"
+    target: "Resource"
+    deviation: "Checks traces only; the ES|QL implementation checks traces, logs and metrics."
+    query: |
+      SELECT
+        ServiceName AS `service.name`,
+        countIf(empty(ResourceAttributes['service.instance.id'])) = 0 AS rule_passed,
+        if(count() = 0, 0.0,
+           toFloat64(countIf(empty(ResourceAttributes['service.instance.id']))) / toFloat64(count())) AS extent,
+        coalesce(anyIf(TraceId, empty(ResourceAttributes['service.instance.id'])), '') AS example
+      FROM {{ .Indices.Traces }}
+      WHERE Timestamp > now() - INTERVAL {{ .TimeWindow }}
+        AND ServiceName != ''
+      GROUP BY ServiceName
+      FORMAT JSONEachRow
+
+  # ─── Span Rules ───────────────────────────────────────────────
+
+  - spec_rule_id: "SPA-003"
+    enabled: true
+    status: "heuristic"
+    description: "Span names have bound cardinality"
+    impact: "Important"
+    target: "TraceSpan"
+    advisory: true
+    heuristic: true
+    deviation: "Spec criteria are TODO; shown for information, not scored."
+    notes: >
+      Heuristic match for the ES|QL version: pass if total < 50 (low sample),
+      or distinct names <= 200, or ratio (distinct/total) <= 0.3. Extent is
+      the cardinality ratio when failing.
+    query: |
+      SELECT
+        ServiceName AS `service.name`,
+        (total < 50 OR distinct_names <= 200 OR ratio <= 0.3) AS rule_passed,
+        if((total < 50 OR distinct_names <= 200 OR ratio <= 0.3), 0.0, ratio) AS extent,
+        concat(toString(distinct_names), ' distinct / ', toString(total), ' spans') AS example
+      FROM (
+        SELECT
+          ServiceName,
+          count() AS total,
+          uniq(SpanName) AS distinct_names,
+          if(count() = 0, 0.0, toFloat64(uniq(SpanName)) / toFloat64(count())) AS ratio
+        FROM {{ .Indices.Traces }}
+        WHERE Timestamp > now() - INTERVAL {{ .TimeWindow }}
+          AND ServiceName != ''
+          AND SpanName != ''
+        GROUP BY ServiceName
+      )
+      FORMAT JSONEachRow
+
+  # ─── Log Rules ────────────────────────────────────────────────
+
+  - spec_rule_id: "LOG-002"
+    enabled: true
+    description: "Log records have severityNumber set"
+    impact: "Important"
+    target: "Log"
+    deviation: "Spec description says severityNumber, criteria say severity.text = UNSET; both are checked. Unlike the ES|QL implementation, an empty or missing severity text also fails."
+    query: |
+      SELECT
+        ServiceName AS `service.name`,
+        countIf(no_sev) = 0 AS rule_passed,
+        if(count() = 0, 0.0, toFloat64(countIf(no_sev)) / toFloat64(count())) AS extent,
+        coalesce(anyIf(TraceId, no_sev), '') AS example
+      FROM (
+        SELECT
+          ServiceName,
+          TraceId,
+          (SeverityText = '' OR upper(SeverityText) = 'UNSET' OR SeverityNumber = 0) AS no_sev
+        FROM {{ .Indices.Logs }}
+        WHERE Timestamp > now() - INTERVAL {{ .TimeWindow }}
+          AND ServiceName != ''
+      )
+      GROUP BY ServiceName
+      FORMAT JSONEachRow
+
+  # ─── Metric Rules ─────────────────────────────────────────────
+  #
+  # Only the otel_metrics_sum table is queried; gauge and histogram tables
+  # are not.
+
+  - spec_rule_id: "MET-001"
+    enabled: true
+    description: "Metric attributes have bound cardinality"
+    impact: "Important"
+    target: "Metric"
+    heuristic: true
+    deviation: "Counts time series (distinct attribute sets) per metric in the configured time window, an upper bound on per-attribute cardinality; the spec uses a 1-hour window."
+    notes: >
+      Counts unique attribute-map values per (service, metric_name) as a
+      proxy for series cardinality. Mirrors the ES|QL TS_INFO approach: the
+      series count is an upper bound on each attribute's cardinality, so a
+      metric fails when it reaches or exceeds the threshold.
+    query: |
+      SELECT
+        ServiceName AS `service.name`,
+        countIf(series_count >= {{ .CardinalityThreshold }}) = 0 AS rule_passed,
+        if(count() = 0, 0.0,
+           toFloat64(countIf(series_count >= {{ .CardinalityThreshold }})) / toFloat64(count())) AS extent,
+        coalesce(anyIf(MetricName, series_count >= {{ .CardinalityThreshold }}), '') AS example
+      FROM (
+        SELECT
+          ServiceName,
+          MetricName,
+          uniq(Attributes) AS series_count
+        FROM {{ .Indices.Metrics }}
+        WHERE TimeUnix > now() - INTERVAL {{ .TimeWindow }}
+          AND ServiceName != ''
+        GROUP BY ServiceName, MetricName
+      )
+      GROUP BY ServiceName
+      FORMAT JSONEachRow
+
+  - spec_rule_id: "MET-006"
+    enabled: true
+    description: "Metric names do not equal semantic convention attribute keys"
+    impact: "Important"
+    target: "Metric"
+    notes: >
+      Uses the curated MET006SemconvKeys list shared with the ES|QL backend.
+    query: |
+      SELECT
+        ServiceName AS `service.name`,
+        countIf(is_semconv) = 0 AS rule_passed,
+        if(count() = 0, 0.0, toFloat64(countIf(is_semconv)) / toFloat64(count())) AS extent,
+        coalesce(anyIf(MetricName, is_semconv), '') AS example
+      FROM (
+        SELECT
+          ServiceName,
+          MetricName,
+          MetricName IN ({{ .MET006SemconvKeysSingleQuoted }}) AS is_semconv
+        FROM {{ .Indices.Metrics }}
+        WHERE TimeUnix > now() - INTERVAL {{ .TimeWindow }}
+          AND ServiceName != ''
+        GROUP BY ServiceName, MetricName
+      )
+      GROUP BY ServiceName
+      FORMAT JSONEachRow

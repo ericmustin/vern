@@ -1,0 +1,8 @@
+rule: SPA-002
+cases:
+  # Two services in one trace; the back end's INTERNAL span has its parent in the front end.
+  pass: { status: evaluated, services: { conf-spa-002-front: true, conf-spa-002-back: true } }
+  # An INTERNAL span whose parent_span_id is not in the trace.
+  fail: { status: evaluated, services: { conf-spa-002: false } }
+  # A SERVER span whose upstream parent was not captured passes in sample mode (deviation).
+  server_root: { status: evaluated, services: { conf-spa-002: true } }

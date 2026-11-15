@@ -1,0 +1,13 @@
+# Keep everything go:embed needs: spec/**, configs/*.yaml.
+/.git
+/dist
+/docs
+/demo/samples
+/vern
+/.superpowers
+/.claude
+/.agents
+/.env
+/deploy/.env
+/*.md
+!/README.md

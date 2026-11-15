@@ -1,0 +1,10 @@
+rule: SPA-001
+cases:
+  # One trace, one service, exactly 10 INTERNAL spans (the limit).
+  pass: { status: evaluated, services: { conf-spa-001: true } }
+  # One trace, one service, 11 INTERNAL spans.
+  fail: { status: evaluated, services: { conf-spa-001: false } }
+  # 12 INTERNAL spans in one service, 6 in each of two traces: counted per trace.
+  two_traces: { status: evaluated, services: { conf-spa-001: true } }
+  # 12 INTERNAL spans in one trace, 6 in each of two services: counted per service.
+  two_services: { status: evaluated, services: { conf-spa-001-a: true, conf-spa-001-b: true } }

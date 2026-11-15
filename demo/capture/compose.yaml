@@ -1,0 +1,31 @@
+# Capture stack: generators -> collector -> file. Publishes NO host ports.
+# Driven by `make capture` (see Makefile); do not use --abort-on-container-exit.
+name: vern-capture
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.152.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    # Distroless image: run as root so the bind-mounted ./../samples is writable.
+    user: "0:0"
+    volumes:
+      - ./collector.yaml:/etc/otelcol/config.yaml:ro
+      - ./../samples:/samples
+
+  trafficgen:
+    build: ../trafficgen
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - VERN_DEMO_DURATION=${CAPTURE_SECONDS:-90}
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  metricsgen:
+    build: ../metricsgen
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - VERN_DEMO_DURATION=${CAPTURE_SECONDS:-90}
+    depends_on:
+      otel-collector:
+        condition: service_started

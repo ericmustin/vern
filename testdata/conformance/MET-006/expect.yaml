@@ -1,0 +1,6 @@
+rule: MET-006
+cases:
+  # A semconv metric name that is not an attribute key.
+  pass: { status: evaluated, services: { conf-met-006: true } }
+  # The spec's example: http.response.status_code.
+  fail: { status: evaluated, services: { conf-met-006: false } }

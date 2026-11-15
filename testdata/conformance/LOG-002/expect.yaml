@@ -1,0 +1,9 @@
+rule: LOG-002
+cases:
+  pass: { status: evaluated, services: { conf-log-002: true } }
+  # One record with neither severityNumber nor severityText.
+  fail: { status: evaluated, services: { conf-log-002: false } }
+  # severityNumber set, severityText absent.
+  number_only: { status: evaluated, services: { conf-log-002: true } }
+  # The spec criterion: severity.text = UNSET, with severityNumber 9 set, so only the text fails.
+  unset_text: { status: evaluated, services: { conf-log-002: false } }

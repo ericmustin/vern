@@ -88,7 +88,7 @@ func formatAndWrite(src []byte, path string) error {
 	return os.WriteFile(path, formatted, 0o644)
 }
 
-// QuotedCSV renders a slice of keys as a comma-separated quoted list,
+// QuotedCSV renders a slice of keys as a comma-separated double-quoted list,
 // suitable for splicing into ES|QL `IN (...)` expressions.
 func QuotedCSV(keys []string) string {
 	if len(keys) == 0 {
@@ -99,6 +99,22 @@ func QuotedCSV(keys []string) string {
 	parts := make([]string, 0, len(sorted))
 	for _, k := range sorted {
 		parts = append(parts, fmt.Sprintf("%q", k))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// SingleQuotedCSV renders a slice of keys as a comma-separated single-quoted
+// list, suitable for ClickHouse SQL and OpenSearch PPL `IN (...)` expressions
+// (both treat double quotes as identifiers, not string literals).
+func SingleQuotedCSV(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	sorted := append([]string{}, keys...)
+	sort.Strings(sorted)
+	parts := make([]string, 0, len(sorted))
+	for _, k := range sorted {
+		parts = append(parts, "'"+strings.ReplaceAll(k, "'", "''")+"'")
 	}
 	return strings.Join(parts, ", ")
 }

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Vern · Instrumentation Score</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">Vern <span class="brand-sub">Instrumentation Score</span></a>
+    <nav class="site-nav" aria-label="Site">
+      <ul>
+        <li><a href="/" aria-current="page">Score a sample</a></li>
+        <li><a href="methodology.html">Methodology</a></li>
+        <li><a href="privacy.html">Privacy</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main" class="wrap">
+  <h1>Score your OpenTelemetry instrumentation</h1>
+  <p class="lead">Drop OTLP JSON files captured from your services. Vern checks them against the Instrumentation Score spec, shows what passed and what to fix, and deletes the data when the run ends.</p>
+
+  <section id="upload" aria-labelledby="upload-title">
+    <h2 id="upload-title" class="visually-hidden">Upload a sample</h2>
+    <div id="dropzone" class="dropzone">
+      <p class="dropzone-title">Drop OTLP JSON files here</p>
+      <p class="hint">JSON or NDJSON lines, plain, gzip or zip. You can drop several files at once.</p>
+      <div class="btn-row">
+        <button type="button" id="pick" class="btn btn-primary">Choose files</button>
+        <button type="button" id="example" class="btn">Try example data</button>
+      </div>
+      <input type="file" id="file-input" class="visually-hidden" multiple tabindex="-1" aria-hidden="true" accept=".json,.jsonl,.ndjson,.gz,.zip,application/json,application/gzip,application/zip">
+      <p class="hint">Limits: 30 MB compressed, 200 MB decompressed, 500,000 items. A run stops after 120 seconds.</p>
+    </div>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+    <div id="error" class="banner banner-error" role="alert" hidden></div>
+  </section>
+
+  <section id="results" class="section" aria-labelledby="results-title" hidden>
+    <div class="results-header">
+      <h2 id="results-title" tabindex="-1">Your score</h2>
+      <p id="run-meta" class="hint"></p>
+    </div>
+
+    <div id="problems" class="banner banner-error" hidden>
+      <h3>This run may not be trustworthy</h3>
+      <ul id="problems-list"></ul>
+    </div>
+
+    <div class="card score-card">
+      <div class="gauge-wrap">
+        <div id="gauge"></div>
+        <p class="score-value" id="score-value"></p>
+        <p class="score-category" id="score-category"></p>
+      </div>
+      <div class="score-side">
+        <label for="service">Show the score for</label>
+        <select id="service"></select>
+        <p id="tally" class="tally"></p>
+        <ul class="bands" aria-label="Score bands from the spec">
+          <li><span class="swatch swatch-poor"></span>Poor: below 50</li>
+          <li><span class="swatch swatch-needs"></span>Needs Improvement: 50–74.9</li>
+          <li><span class="swatch swatch-good"></span>Good: 75–89.9</li>
+          <li><span class="swatch swatch-excellent"></span>Excellent: 90 and above</li>
+        </ul>
+      </div>
+    </div>
+
+    <div id="disclosure" class="banner banner-warn disclosure">
+      <h3 id="disclosure-title"></h3>
+      <p id="disclosure-text"></p>
+      <ul id="disclosure-list" class="disclosure-list"></ul>
+    </div>
+
+    <section class="section" aria-labelledby="sample-title">
+      <h2 id="sample-title">What we found in your sample</h2>
+      <div class="card">
+        <dl id="sample" class="facts"></dl>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="rules-title">
+      <h2 id="rules-title">Rules</h2>
+      <p id="rules-intro" class="hint"></p>
+      <div id="rules"></div>
+    </section>
+
+    <section class="downloads" aria-labelledby="downloads-title">
+      <h2 id="downloads-title">Download the report</h2>
+      <div class="btn-row">
+        <button type="button" id="download-json" class="btn">Download JSON</button>
+        <button type="button" id="download-md" class="btn">Download Markdown</button>
+      </div>
+    </section>
+  </section>
+
+  <section class="section help" aria-labelledby="help-title">
+    <h2 id="help-title">How do I capture a sample?</h2>
+    <div class="card">
+      <h3>With an OpenTelemetry Collector</h3>
+      <p>Run a Collector with the <code>file</code> exporter and point your instrumented application at it. Do not add resource attributes in the Collector, so the score reflects what your SDKs emit.</p>
+<pre>receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  file:
+    path: /samples/capture.jsonl
+    format: json
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file]</pre>
+      <p>Stop the Collector gracefully so it flushes the file, then upload <code>capture.jsonl</code> (compress it first if it is large):</p>
+<pre>gzip -9 -c capture.jsonl &gt; capture.jsonl.gz</pre>
+
+      <h3>From the SDK, without a Collector</h3>
+      <p>Some SDKs and declarative configurations offer an experimental OTLP file exporter that writes OTLP JSON lines to stdout or a file. In a declarative configuration file it looks like this; repeat it for the meter and logger providers:</p>
+<pre>tracer_provider:
+  processors:
+    - batch:
+        exporter:
+          otlp_file/development:
+            output_stream: stdout</pre>
+      <p>Send stdout to a <code>.jsonl</code> file and upload it. The exporter is experimental and its name differs between SDKs, so check your SDK's documentation.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Vern scores against the <a href="https://github.com/instrumentation-score/spec" target="_blank" rel="noopener noreferrer">Instrumentation Score spec</a>. <a href="https://github.com/ericmustin/vern" target="_blank" rel="noopener noreferrer">Source code</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

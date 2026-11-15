@@ -1,0 +1,8 @@
+rule: SPA-005
+cases:
+  # 20 spans under 5 ms in one trace (the limit).
+  pass: { status: evaluated, services: { conf-spa-005: true } }
+  # 21 spans under 5 ms in one trace.
+  fail: { status: evaluated, services: { conf-spa-005: false } }
+  # 21 spans of exactly 5 ms: not "less than 5 milliseconds".
+  five_ms: { status: evaluated, services: { conf-spa-005: true } }

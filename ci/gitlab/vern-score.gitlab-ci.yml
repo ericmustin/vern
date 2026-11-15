@@ -1,0 +1,45 @@
+# Hidden job for scoring OTLP captures with vern. Include it from a release tag
+# and pin the image to the same tag:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/ericmustin/vern/vX.Y.Z/ci/gitlab/vern-score.gitlab-ci.yml
+#   score:
+#     extends: .vern-score
+#     variables:
+#       VERN_IMAGE: ghcr.io/ericmustin/vern:vX.Y.Z-ci
+#       VERN_FILES: captures/*.jsonl.gz
+#       VERN_MIN_SCORE: "70"
+#
+# The template cannot know the ref it was included from, so it defaults to the
+# floating ghcr.io/ericmustin/vern:ci image (the newest release). Without the
+# VERN_IMAGE pin, a pinned include still runs whatever vern that image holds, and
+# the binary can drift ahead of the template.
+#
+# Exit code 2 means the score is below VERN_MIN_SCORE. To report that without
+# failing the pipeline, add: allow_failure: { exit_codes: [2] }
+#
+# Elasticsearch runs as a job-private service, so the job needs no Docker-in-Docker.
+# If you override VERN_OUTPUT_DIR, also override artifacts:paths to match.
+# The Elasticsearch service needs a runner with about 2 GB of free memory.
+# See ci/vern-ci.sh for every VERN_* variable (including the OTLP export ones).
+.vern-score:
+  image: ${VERN_IMAGE}
+  variables:
+    VERN_IMAGE: ghcr.io/ericmustin/vern:ci
+    VERN_ELASTICSEARCH_URL: http://elasticsearch:9200
+    VERN_OUTPUT_DIR: vern-report
+    # The service is ephemeral, so the cluster-wide template is safe to create.
+    VERN_SETUP_TEMPLATE: "true"
+  services:
+    - name: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+      alias: elasticsearch
+      variables:
+        ES_SETTING_DISCOVERY_TYPE: single-node
+        ES_SETTING_XPACK_SECURITY_ENABLED: "false"
+        ES_SETTING_XPACK_LICENSE_SELF__GENERATED_TYPE: basic
+        ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+  script: [vern-ci.sh]
+  artifacts:
+    when: always
+    expose_as: Instrumentation score
+    paths: [vern-report/]

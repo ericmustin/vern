@@ -1,0 +1,9 @@
+# Overlay for host CLI runs and integration tests:
+#   docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up -d elasticsearch
+services:
+  elasticsearch:
+    ports:
+      - "127.0.0.1:9200:9200"
+    networks:
+      - backend
+      - default

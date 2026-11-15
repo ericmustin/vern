@@ -65,7 +65,15 @@ def noisy_flow() -> None:
 
 flows = [checkout_flow, noisy_flow]
 
+# VERN_DEMO_DURATION (seconds): 0 (default) runs forever; otherwise stop after
+# that long, flush the exporter and exit 0.
+duration = float(os.environ.get("VERN_DEMO_DURATION", "0"))
+deadline = time.time() + duration
+
 print(f"vern demo traffic generator exporting to {endpoint}")
-while True:
+while duration == 0 or time.time() < deadline:
     random.choice(flows)()
     work(1.0 / rate)
+
+provider.force_flush()
+provider.shutdown()

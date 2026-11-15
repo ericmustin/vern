@@ -1,0 +1,65 @@
+name: score-demo
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - web/examples/**
+      - configs/**
+      - internal/**
+      - cmd/**
+      - spec/**
+      - go.mod
+      - go.sum
+      - Dockerfile
+      - action.yml
+      - ci/**
+      - .github/workflows/score-demo.yml
+
+permissions:
+  contents: read
+
+jobs:
+  score:
+    name: Score demo capture and export over OTLP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Start OTLP debug collector
+        run: |
+          docker run -d --name otelcol -p 4318:4318 \
+            -v "$PWD/ci/test/collector-debug.yaml:/etc/otelcol-contrib/config.yaml" \
+            otel/opentelemetry-collector-contrib:0.152.0
+
+      - name: Score
+        id: vern
+        uses: ./
+        with:
+          version: source
+          files: web/examples/demo.jsonl.gz
+          min-score: "0"
+          otlp-endpoint: http://localhost:4318
+
+      - name: Assert a score was computed
+        env:
+          SCORED: ${{ steps.vern.outputs.scored }}
+        run: test "$SCORED" = true
+
+      - name: Assert the collector received the score
+        run: |
+          for _ in $(seq 1 10); do
+            if docker logs otelcol 2>&1 | grep -q 'instrumentation_score'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "instrumentation_score not found in collector logs" >&2
+          docker logs otelcol 2>&1 | tail -n 50 >&2
+          exit 1
+
+      - name: Remove collector
+        if: always()
+        run: docker rm -f otelcol

@@ -1,0 +1,162 @@
+# opensearch-mappings.yaml — OpenSearch PPL query mappings for the Instrumentation Score spec.
+#
+# Each rule maps to a PPL query that returns the uniform shape:
+#   rule_passed (bool), service.name (string), example (string), extent (float, 0.0-1.0)
+#
+# Templates use Go text/template — variables are resolved by `vern evaluate`
+# from the `opensearch:` block of vern.yaml.
+#
+# Schema assumptions: OpenSearch Trace Analytics + ss4o (Simple Schema for
+# Observability) defaults produced by Data Prepper:
+#   traces  -> otel-v1-apm-span-*  (fields: serviceName, name, traceId, startTime,
+#                                   resource.attributes.*, attributes.*)
+#   logs    -> ss4o_logs-*-*       (fields: serviceName, severityText, severityNumber,
+#                                   time, body, attributes.*, resource.attributes.*)
+#   metrics -> ss4o_metrics-*-*    (fields: serviceName, name, time, value, attributes.*)
+#
+# Notes:
+# - The `example` field is empty: PPL has no portable way to sample one
+#   failing ID per group.
+# - MET-001 uses datapoint count as a coarse series-cardinality proxy.
+#   OpenSearch PPL can't hash an object (attribute map), so this is an
+#   approximation, not a strict equivalent of the ES|QL TS_INFO approach.
+
+backend: opensearch
+version: "0.1.0"
+spec_version: "0.1"
+
+rules:
+
+  # ─── Resource Rules ───────────────────────────────────────────
+
+  - spec_rule_id: "RES-005"
+    enabled: true
+    description: "service.name is present"
+    impact: "Critical"
+    target: "Resource"
+    deviation: "Checks traces only; the ES|QL implementation checks traces, logs and metrics."
+    query: |
+      source = {{ .Indices.Traces }}
+      | where startTime >= DATE_SUB(NOW(), INTERVAL {{ .TimeWindow }})
+      | eval missing = case(serviceName is null OR serviceName = '', 1 else 0)
+      | eval bucket = case(serviceName is null OR serviceName = '', '__unknown__' else serviceName)
+      | stats sum(missing) as failed, count() as total by bucket
+      | eval rule_passed = failed = 0
+      | eval extent = case(total != 0, failed * 1.0 / total else 0.0)
+      | eval example = ''
+      | rename bucket as `service.name`
+      | fields rule_passed, `service.name`, example, extent
+
+  - spec_rule_id: "RES-001"
+    enabled: true
+    description: "service.instance.id is present"
+    impact: "Normal"
+    target: "Resource"
+    deviation: "Checks traces only; the ES|QL implementation checks traces, logs and metrics."
+    query: |
+      source = {{ .Indices.Traces }}
+      | where startTime >= DATE_SUB(NOW(), INTERVAL {{ .TimeWindow }})
+      | where serviceName is not null AND serviceName != ''
+      | eval missing = case(`resource.attributes.service.instance.id` is null OR `resource.attributes.service.instance.id` = '', 1 else 0)
+      | stats sum(missing) as failed, count() as total by serviceName
+      | eval rule_passed = failed = 0
+      | eval extent = case(total != 0, failed * 1.0 / total else 0.0)
+      | eval example = ''
+      | rename serviceName as `service.name`
+      | fields rule_passed, `service.name`, example, extent
+
+  # ─── Span Rules ───────────────────────────────────────────────
+
+  - spec_rule_id: "SPA-003"
+    enabled: true
+    status: "heuristic"
+    description: "Span names have bound cardinality"
+    impact: "Important"
+    target: "TraceSpan"
+    advisory: true
+    heuristic: true
+    deviation: "Spec criteria are TODO; shown for information, not scored."
+    notes: >
+      Heuristic match for the ES|QL version: pass if total spans < 50,
+      or distinct names <= 200, or ratio (distinct/total) <= 0.3.
+    query: |
+      source = {{ .Indices.Traces }}
+      | where startTime >= DATE_SUB(NOW(), INTERVAL {{ .TimeWindow }})
+      | where serviceName is not null AND serviceName != '' AND name is not null AND name != ''
+      | stats count() as total, distinct_count(name) as distinct_names by serviceName
+      | eval ratio = case(total != 0, distinct_names * 1.0 / total else 0.0)
+      | eval rule_passed = (total < 50 OR distinct_names <= 200 OR ratio <= 0.3)
+      | eval extent = case(rule_passed, 0.0 else ratio)
+      | eval example = concat(cast(distinct_names as string), ' distinct / ', cast(total as string), ' spans')
+      | rename serviceName as `service.name`
+      | fields rule_passed, `service.name`, example, extent
+
+  # ─── Log Rules ────────────────────────────────────────────────
+
+  - spec_rule_id: "LOG-002"
+    enabled: true
+    description: "Log records have severityNumber set"
+    impact: "Important"
+    target: "Log"
+    deviation: "Spec description says severityNumber, criteria say severity.text = UNSET; both are checked. Unlike the ES|QL implementation, an empty or missing severity text also fails."
+    query: |
+      source = {{ .Indices.Logs }}
+      | where time >= DATE_SUB(NOW(), INTERVAL {{ .TimeWindow }})
+      | where serviceName is not null AND serviceName != ''
+      | eval no_sev = case(
+          severityText is null OR severityText = '' OR upper(severityText) = 'UNSET' OR severityNumber is null OR severityNumber = 0,
+          1 else 0
+        )
+      | stats sum(no_sev) as failed, count() as total by serviceName
+      | eval rule_passed = failed = 0
+      | eval extent = case(total != 0, failed * 1.0 / total else 0.0)
+      | eval example = ''
+      | rename serviceName as `service.name`
+      | fields rule_passed, `service.name`, example, extent
+
+  # ─── Metric Rules ─────────────────────────────────────────────
+
+  - spec_rule_id: "MET-001"
+    enabled: true
+    description: "Metric attributes have bound cardinality"
+    impact: "Important"
+    target: "Metric"
+    heuristic: true
+    deviation: "Counts datapoints per metric in the configured time window as a series-count proxy (can overcount); the spec counts unique values per attribute key in a 1-hour window."
+    notes: >
+      Approximation: counts datapoints per (service, metric_name) as a series-
+      count proxy and flags metrics at or above the cardinality threshold. PPL can't
+      hash an attribute map, so this can overcount when datapoints repeat the
+      same series.
+    query: |
+      source = {{ .Indices.Metrics }}
+      | where time >= DATE_SUB(NOW(), INTERVAL {{ .TimeWindow }})
+      | where serviceName is not null AND serviceName != ''
+      | stats count() as series_count by serviceName, name
+      | eval over = case(series_count >= {{ .CardinalityThreshold }}, 1 else 0)
+      | stats sum(over) as failed, count() as total by serviceName
+      | eval rule_passed = failed = 0
+      | eval extent = case(total != 0, failed * 1.0 / total else 0.0)
+      | eval example = ''
+      | rename serviceName as `service.name`
+      | fields rule_passed, `service.name`, example, extent
+
+  - spec_rule_id: "MET-006"
+    enabled: true
+    description: "Metric names do not equal semantic convention attribute keys"
+    impact: "Important"
+    target: "Metric"
+    notes: >
+      Uses the curated MET006SemconvKeys list shared with the ES|QL backend.
+    query: |
+      source = {{ .Indices.Metrics }}
+      | where time >= DATE_SUB(NOW(), INTERVAL {{ .TimeWindow }})
+      | where serviceName is not null AND serviceName != ''
+      | stats count() by serviceName, name
+      | eval is_semconv = case(name in ({{ .MET006SemconvKeysSingleQuoted }}), 1 else 0)
+      | stats sum(is_semconv) as failed, count() as total by serviceName
+      | eval rule_passed = failed = 0
+      | eval extent = case(total != 0, failed * 1.0 / total else 0.0)
+      | eval example = ''
+      | rename serviceName as `service.name`
+      | fields rule_passed, `service.name`, example, extent

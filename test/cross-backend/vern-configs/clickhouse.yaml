@@ -1,0 +1,18 @@
+# vern config for the cross-backend harness — ClickHouse backend.
+# Run from the repo root: vern evaluate --config test/cross-backend/vern-configs/clickhouse.yaml
+backend: clickhouse
+rules_dir: ./spec/rules
+mappings: ./configs/clickhouse-mappings.yaml
+
+clickhouse:
+  url: "http://localhost:8123"
+  username: "default"
+  password: "vern-dev"
+  database: "otel"
+  # ClickHouse INTERVAL clause units.
+  time_window: "1 HOUR"
+  cardinality_threshold: 10000
+  tables:
+    traces: "otel_traces"
+    logs: "otel_logs"
+    metrics: "otel_metrics_sum"

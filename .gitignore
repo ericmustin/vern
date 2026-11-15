@@ -19,6 +19,8 @@
 # rather than the directory itself, or git won't descend to re-include.
 /docs/*
 !/docs/ADVANCED.md
+!/docs/CI.md
+!/docs/DEMO.md
 !/docs/images/
 
 # Editor / OS
@@ -28,3 +30,10 @@
 .vscode/
 .agents/
 skills-lock.json
+.claude/
+
+# Compose bundle secrets
+deploy/.env
+
+# Local CI runner output
+/vern-report/

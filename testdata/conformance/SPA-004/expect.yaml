@@ -1,0 +1,6 @@
+rule: SPA-004
+cases:
+  pass: { status: evaluated, services: { conf-spa-004: true } }
+  fail: { status: evaluated, services: { conf-spa-004: false } }
+  # A CLIENT span with a parent_span_id (even a missing one) is not a root span.
+  orphan_client: { status: evaluated, services: { conf-spa-004: true } }

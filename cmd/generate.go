@@ -11,8 +11,6 @@ import (
 	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/dashboard"
 	"github.com/ericmustin/vern/internal/mappings"
-	"github.com/ericmustin/vern/internal/sdksupport"
-	"github.com/ericmustin/vern/internal/semconv"
 	"github.com/ericmustin/vern/internal/workflow/elastic"
 	"github.com/spf13/cobra"
 )
@@ -43,7 +41,7 @@ var generateCmd = &cobra.Command{
 			return err
 		}
 
-		applyOptInGates(mf, cfg)
+		mappings.ApplyWorkflowGates(mf.Rules, cfg) // before coverage so it matches resolution (idempotent)
 
 		specRules, err := coverage.LoadSpecRules(cfg.RulesDir)
 		if err != nil {
@@ -51,16 +49,7 @@ var generateCmd = &cobra.Command{
 		}
 		cov := coverage.Build(specRules, mf)
 
-		resolved, err := mappings.ResolveWithData(mf.Rules, cfg, mappings.TemplateData{
-			SemconvAttributeKeys:    semconv.QuotedCSV(semconv.AttributeKeys),
-			SemconvResourceOnlyKeys: semconv.QuotedCSV(semconv.ResourceOnlyKeys),
-			SemconvSpanOnlyKeys:     semconv.QuotedCSV(semconv.SpanOnlyKeys),
-			SemconvLogOnlyKeys:      semconv.QuotedCSV(semconv.LogOnlyKeys),
-			SemconvMetricOnlyKeys:   semconv.QuotedCSV(semconv.MetricOnlyKeys),
-			MET001AttrKeys:          semconv.MET001AttrAllowlist(),
-			MET006SemconvKeys:       semconv.QuotedCSV(semconv.MET006CuratedKeys()),
-			SDKSupportMatrix:        sdksupport.RenderESQLCase("resource.attributes.telemetry.sdk.language", "resource.attributes.telemetry.sdk.version"),
-		})
+		resolved, err := resolveForWorkflow(mf, cfg)
 		if err != nil {
 			return err
 		}
@@ -84,7 +73,11 @@ var generateCmd = &cobra.Command{
 		}
 		fmt.Println()
 		for _, s := range resolved.Skipped {
-			fmt.Printf("  skipped: %s (%s)\n", s.SpecRuleID, s.Reason)
+			reason := s.Reason
+			if s.Mapping.Sensitive {
+				reason = s.Mapping.Status
+			}
+			fmt.Printf("  skipped: %s (%s)\n", s.SpecRuleID, reason)
 		}
 
 		dashboardsPath := generateDashboards
@@ -113,27 +106,13 @@ var generateCmd = &cobra.Command{
 	},
 }
 
-// applyOptInGates flips Enabled on rules whose OptInFlag is satisfied by
-// the active config (and turns off any rule whose flag is not satisfied,
-// in case the YAML accidentally had it enabled). Today only SDK-001 uses
-// this — its opt_in_flag is "filters.enable_sdk_rules".
-func applyOptInGates(mf *mappings.MappingsFile, cfg *config.Config) {
-	flagSet := func(name string) bool {
-		switch name {
-		case "":
-			return true // no gate
-		case "filters.enable_sdk_rules":
-			return cfg.Filters.EnableSDKRules
-		default:
-			return false
-		}
-	}
-	for i := range mf.Rules {
-		if mf.Rules[i].OptInFlag == "" {
-			continue
-		}
-		mf.Rules[i].Enabled = flagSet(mf.Rules[i].OptInFlag)
-	}
+// resolveForWorkflow applies the workflow gates (opt-in flags; sensitive-data
+// rules off, since a workflow has no per-run field discovery) and resolves
+// every rule query with the semconv catalog. Shared by generate and setup so
+// they cannot drift. Strict: any template error is returned.
+func resolveForWorkflow(mf *mappings.MappingsFile, cfg *config.Config) (*mappings.ResolveResult, error) {
+	mappings.ApplyWorkflowGates(mf.Rules, cfg)
+	return mappings.ResolveWithData(mf.Rules, cfg, mappings.SemconvCatalog())
 }
 
 // defaultDashboardsPath puts dashboards.ndjson next to the workflow file.

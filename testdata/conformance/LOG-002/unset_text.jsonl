@@ -1,0 +1,1 @@
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"conf-log-002"}}]},"scopeLogs":[{"scope":{"name":"conformance"},"logRecords":[{"timeUnixNano":"1794672000000000000","observedTimeUnixNano":"1794672000000000000","body":{"stringValue":"raw line"},"severityText":"UNSET","severityNumber":9}]}]}]}

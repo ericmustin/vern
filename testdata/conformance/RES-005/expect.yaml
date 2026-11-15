@@ -1,0 +1,6 @@
+rule: RES-005
+cases:
+  pass: { status: evaluated, services: { conf-res-005: true } }
+  fail: { status: evaluated, services: { "(missing service.name)": false } }
+  # service.name present but empty.
+  empty: { status: evaluated, services: { "(missing service.name)": false } }
