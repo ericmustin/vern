@@ -36,6 +36,7 @@ type fakeEngine struct {
 	loadEntered chan struct{} // receives once per blocking Load, if non-nil
 	rows        []evaluate.Row
 	rowsErr     error // every rule query fails with this
+	fieldsErr   error // field discovery fails with this
 }
 
 func (f *fakeEngine) setReadyErr(err error) {
@@ -82,7 +83,7 @@ func (f *fakeEngine) Session(id engine.RunID) (evaluate.Executor, config.IndexPa
 }
 
 func (f *fakeEngine) Fields(ctx context.Context, id engine.RunID) (mappings.Fields, error) {
-	return mappings.Fields{}, nil
+	return mappings.Fields{}, f.fieldsErr
 }
 
 func (f *fakeEngine) Purge(ctx context.Context, id engine.RunID) error {

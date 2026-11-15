@@ -677,3 +677,15 @@ func TestServe_WriteDeadline(t *testing.T) {
 		t.Fatalf("status %d", res.StatusCode)
 	}
 }
+
+func TestRuns_BusyFieldDiscoveryAbortsWholeRun(t *testing.T) {
+	eng := &fakeEngine{fieldsErr: fmt.Errorf("field caps (traces) at http://es-internal:9200: HTTP 429: %w", engine.ErrBusy)}
+	s := newTestServer(t, Config{Engine: eng, Score: samplescore.Score})
+	rec := serve(s, postRaw(readDemo(t)))
+	if rec.Code != http.StatusServiceUnavailable || errorBody(t, rec) != "busy, try again shortly" || rec.Header().Get("Retry-After") != "30" {
+		t.Fatalf("busy discovery = %d %s (Retry-After %q)", rec.Code, rec.Body.String(), rec.Header().Get("Retry-After"))
+	}
+	if eng.purgeCount() != 1 {
+		t.Fatalf("Purge called %d times, want 1", eng.purgeCount())
+	}
+}

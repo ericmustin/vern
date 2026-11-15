@@ -221,3 +221,29 @@ func TestExecute_BusyIsErrBusy(t *testing.T) {
 		}
 	}
 }
+
+func TestExecute_SuccessBodyWithBreakerTextIsNotBusy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"columns":[{"name":"rule_passed","type":"boolean"},{"name":"service.name","type":"keyword"},{"name":"extent","type":"double"},{"name":"example","type":"keyword"}],"values":[[false,"a",1.0,"circuit_breaking_exception"]]}`))
+	}))
+	defer srv.Close()
+	rows, err := New(srv.URL, "").Execute(context.Background(), "FROM x")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows %v, err %v", rows, err)
+	}
+}
+
+func TestExecute_PartialBreakerIsBusyButOtherPartialIsNot(t *testing.T) {
+	for body, busy := range map[string]bool{
+		`{"is_partial":true,"_clusters":{"details":{"l":{"failures":[{"reason":{"type":"circuit_breaking_exception"}}]}}}}`: true,
+		`{"is_partial":true,"_clusters":{"details":{"l":{"failures":[{"reason":{"type":"shard_not_found"}}]}}}}`:            false,
+		`{"is_partial":true,"values":[["circuit_breaking_exception"]]}`:                                                     false,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+		_, err := New(srv.URL, "").Execute(context.Background(), "FROM x")
+		srv.Close()
+		if err == nil || errors.Is(err, evaluate.ErrBusy) != busy {
+			t.Errorf("%s: err = %v, busy want %v", body, err, busy)
+		}
+	}
+}

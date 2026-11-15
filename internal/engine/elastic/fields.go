@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ericmustin/vern/internal/engine"
+	"github.com/ericmustin/vern/internal/evaluate"
 	"github.com/ericmustin/vern/internal/mappings"
 )
 
@@ -160,6 +161,9 @@ func (e *Engine) fieldCaps(ctx context.Context, pattern string) (fieldCapsRespon
 	status, body, err := e.do(ctx, http.MethodGet, "/"+pattern+"/_field_caps?"+q.Encode(), "", nil)
 	if err != nil {
 		return fieldCapsResponse{}, err
+	}
+	if evaluate.Busy(status, body) {
+		return fieldCapsResponse{}, fmt.Errorf("HTTP %d: %w", status, engine.ErrBusy)
 	}
 	if status/100 != 2 {
 		return fieldCapsResponse{}, fmt.Errorf("HTTP %d: %s", status, truncate(body))

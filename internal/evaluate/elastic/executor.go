@@ -98,6 +98,9 @@ func (e *Executor) Execute(ctx context.Context, query string) ([]evaluate.Row, e
 	}
 
 	if payload.IsPartial {
+		if evaluate.BusyPartial(raw) {
+			return nil, fmt.Errorf("partial results: %w", evaluate.ErrBusy)
+		}
 		return nil, errors.New("partial results (shard failures): refusing to score this rule")
 	}
 

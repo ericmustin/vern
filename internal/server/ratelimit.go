@@ -15,6 +15,10 @@ const (
 	defaultRateBurst        = 3
 	defaultDailyIngestBytes = 2 << 30
 
+	// maxBuckets bounds the per-IP map; at the cap, new clients are refused
+	// rather than live buckets evicted.
+	maxBuckets = 100_000
+
 	// sweepEvery is how often (on access) idle buckets are evicted.
 	sweepEvery = 10 * time.Minute
 )
@@ -51,6 +55,12 @@ func (l *ipLimiter) allow(key string, now time.Time) (bool, time.Duration) {
 
 	b, ok := l.buckets[key]
 	if !ok {
+		if len(l.buckets) >= maxBuckets {
+			l.sweepNow(now)
+			if len(l.buckets) >= maxBuckets {
+				return false, time.Duration(burstRefill(l) * float64(time.Second))
+			}
+		}
 		b = &bucket{tokens: l.burst, at: now}
 		l.buckets[key] = b
 	}
@@ -70,6 +80,14 @@ func (l *ipLimiter) sweep(now time.Time) {
 	if now.Sub(l.lastSweep) < sweepEvery {
 		return
 	}
+	l.sweepNow(now)
+}
+
+// burstRefill is how long a drained bucket takes to hold a token again, the
+// wait quoted to clients refused at the cap.
+func burstRefill(l *ipLimiter) float64 { return 1 / l.perSec }
+
+func (l *ipLimiter) sweepNow(now time.Time) {
 	l.lastSweep = now
 	for k, b := range l.buckets {
 		if b.tokens+now.Sub(b.at).Seconds()*l.perSec >= l.burst {
@@ -87,8 +105,13 @@ func clientIP(r *http.Request, trusted []netip.Prefix) string {
 	if host, _, err := net.SplitHostPort(peer); err == nil {
 		peer = host
 	}
-	if len(trusted) == 0 || !isTrusted(peer, trusted) {
-		return peer
+	peerAddr, err := netip.ParseAddr(peer)
+	if err != nil {
+		return peer // not an IP (a test transport): key on it as given
+	}
+	peerAddr = peerAddr.Unmap()
+	if len(trusted) == 0 || !isTrusted(peerAddr, trusted) {
+		return limiterKey(peerAddr)
 	}
 	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(hops) - 1; i >= 0; i-- {
@@ -96,19 +119,30 @@ func clientIP(r *http.Request, trusted []netip.Prefix) string {
 		if hop == "" {
 			continue
 		}
-		if !isTrusted(hop, trusted) {
-			return hop
+		a, err := netip.ParseAddr(hop)
+		if err != nil {
+			break // a garbled hop: the entries to its left cannot be trusted either
+		}
+		a = a.Unmap()
+		if !isTrusted(a, trusted) {
+			return limiterKey(a)
 		}
 	}
-	return peer
+	return limiterKey(peerAddr)
 }
 
-func isTrusted(addr string, trusted []netip.Prefix) bool {
-	a, err := netip.ParseAddr(addr)
-	if err != nil {
-		return false
+// limiterKey is the bucket key for an address: IPv6 clients are grouped by
+// /64, since one subscriber holds a whole /64 and could otherwise mint
+// addresses at will.
+func limiterKey(a netip.Addr) string {
+	if a.Is6() {
+		p, _ := a.Prefix(64)
+		return p.String()
 	}
-	a = a.Unmap()
+	return a.String()
+}
+
+func isTrusted(a netip.Addr, trusted []netip.Prefix) bool {
 	for _, p := range trusted {
 		if p.Contains(a) {
 			return true

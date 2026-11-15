@@ -153,3 +153,54 @@ func TestDailyIngestCap_FailedDecodeDoesNotCount(t *testing.T) {
 		t.Fatalf("after a rejected upload = %d, want 200", rec.Code)
 	}
 }
+
+func TestClientIP_IPv6AndGarbage(t *testing.T) {
+	trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	key := func(remote string, xff string, tr []netip.Prefix) string {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", nil)
+		req.RemoteAddr = remote
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		return clientIP(req, tr)
+	}
+	a := key("[2001:db8:1:2:aaaa::1]:1", "", nil)
+	b := key("[2001:db8:1:2:bbbb::9]:1", "", nil)
+	c := key("[2001:db8:1:3::1]:1", "", nil)
+	if a != b {
+		t.Errorf("same /64 keyed differently: %q vs %q", a, b)
+	}
+	if a == c {
+		t.Errorf("different /64s share a key: %q", a)
+	}
+	if got := key("[::ffff:198.51.100.7]:1", "", nil); got != "198.51.100.7" {
+		t.Errorf("mapped IPv4 keyed %q", got)
+	}
+	if got := key("10.1.2.3:1", "2001:db8:1:2:cccc::5", trusted); got != a {
+		t.Errorf("XFF IPv6 keyed %q, want %q", got, a)
+	}
+	// An unparseable hop falls back to the peer, never the raw string.
+	if got := key("10.1.2.3:1", "203.0.113.9, not-an-ip", trusted); got != "10.1.2.3" {
+		t.Errorf("garbled hop keyed %q, want the peer", got)
+	}
+}
+
+func TestRateLimit_BucketCapRefusesNewKeysKeepsLiveOnes(t *testing.T) {
+	l := newIPLimiter(6, 1)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < maxBuckets; i++ {
+		l.buckets["k"+strconv.Itoa(i)] = &bucket{tokens: 0, at: now} // drained and live
+	}
+	l.lastSweep = now
+	ok, wait := l.allow("newcomer", now)
+	if ok || wait <= 0 {
+		t.Fatalf("newcomer at the cap = %v, %v; want refused with a wait", ok, wait)
+	}
+	if len(l.buckets) != maxBuckets {
+		t.Fatalf("buckets = %d, live ones were evicted or one was added", len(l.buckets))
+	}
+	// Once the buckets have refilled, the sweep frees room.
+	if ok, _ := l.allow("newcomer", now.Add(2*time.Hour)); !ok {
+		t.Fatal("newcomer refused after the buckets refilled")
+	}
+}
