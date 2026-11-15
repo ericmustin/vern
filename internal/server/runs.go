@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ericmustin/vern/internal/engine"
 	"github.com/ericmustin/vern/internal/evaluate"
 	"github.com/ericmustin/vern/internal/otlpin"
 	"github.com/ericmustin/vern/internal/report"
@@ -22,10 +25,26 @@ import (
 // multipart boundaries and part headers.
 const multipartOverhead = 1 << 20
 
-var errNoFiles = errors.New("no files in upload")
+var (
+	errNoFiles            = errors.New("no files in upload")
+	errMalformedMultipart = errors.New("malformed multipart upload")
+)
 
 // handleRuns scores one uploaded sample synchronously and returns the report.
 func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	// Limits are checked before the run slot is taken, so a limited client
+	// never occupies it.
+	now := s.now()
+	if ok, wait := s.rate.allow(clientIP(r, s.cfg.TrustedProxies), now); !ok {
+		retryAfter(w, wait)
+		writeError(w, http.StatusTooManyRequests, "rate limit reached; try again later")
+		return
+	}
+	if full, reset := s.ingest.full(now); full {
+		retryAfter(w, reset)
+		writeError(w, http.StatusTooManyRequests, "daily capacity reached")
+		return
+	}
 	select {
 	case s.sem <- struct{}{}:
 	default:
@@ -52,6 +71,7 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		s.failUpload(w, r, ri, err)
 		return
 	}
+	s.ingest.add(s.now(), sample.DecompressedBytes)
 	// WriteTimeout started when the headers were read; the upload, decode
 	// and Ready below may have eaten into it, so give the response a fresh
 	// window covering the whole run.
@@ -60,6 +80,11 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		s.logf("run: extending write deadline: %v", err)
 	}
 	s.scoreSample(w, r, ri, sample, names)
+}
+
+// retryAfter sets Retry-After to d rounded up to whole seconds (at least 1).
+func retryAfter(w http.ResponseWriter, d time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(d.Seconds())))))
 }
 
 func isMultipart(r *http.Request) bool {
@@ -92,6 +117,7 @@ func (s *server) scoreSample(w http.ResponseWriter, r *http.Request, ri *reqInfo
 	// The server log is shared: a failed sensitive-rule query's error can
 	// echo field and metric names from the upload, so it is never logged.
 	opts.QueryErrorDetail = false
+	opts.FixedErrors = true
 	rep, err := s.score(ctx, s.cfg.Engine, sample, opts)
 	if err == nil && rep == nil {
 		err = errors.New("score returned no report")
@@ -130,7 +156,7 @@ func readInputs(r *http.Request, maxFiles int) ([]otlpin.Input, []string, error)
 	}
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return nil, nil, fmt.Errorf("malformed multipart upload: %w", err)
+		return nil, nil, errMalformedMultipart
 	}
 	var inputs []otlpin.Input
 	var names []string
@@ -162,30 +188,61 @@ func readInputs(r *http.Request, maxFiles int) ([]otlpin.Input, []string, error)
 	return inputs, names, nil
 }
 
+// multipartErr keeps the size-limit and cancellation causes (the caller maps
+// them) and drops the rest of the parser's text.
 func multipartErr(err error) error {
-	return fmt.Errorf("malformed multipart upload: %w", err)
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errMalformedMultipart, err)
 }
 
-// failUpload maps a body-reading or decode error. Size limits are 413; any
-// other decode error is the client's input, so a 400 with its message
-// (JSON-encoded on the way out).
+// failUpload maps a body-reading or decode error to a fixed message. The
+// error's own text is never sent: it can carry the upload's file names and
+// values. Size limits are 413; other decode errors are the client's input, so
+// 400.
 func (s *server) failUpload(w http.ResponseWriter, r *http.Request, ri *reqInfo, err error) {
 	var mbe *http.MaxBytesError
 	switch {
 	case errors.As(err, &mbe):
 		writeError(w, http.StatusRequestEntityTooLarge,
 			fmt.Sprintf("upload exceeds the size limit (%d MiB compressed)", s.limits.MaxCompressedBytes>>20))
-	case errors.Is(err, otlpin.ErrTooLarge), errors.Is(err, otlpin.ErrTooManyItems), errors.Is(err, otlpin.ErrTooManyFiles):
-		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+	case errors.Is(err, otlpin.ErrTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, otlpin.ErrTooLarge.Error())
+	case errors.Is(err, otlpin.ErrTooManyItems):
+		writeError(w, http.StatusRequestEntityTooLarge, otlpin.ErrTooManyItems.Error())
+	case errors.Is(err, otlpin.ErrTooManyFiles):
+		writeError(w, http.StatusRequestEntityTooLarge, otlpin.ErrTooManyFiles.Error())
 	case r.Context().Err() != nil:
 		s.clientClosed(ri)
 	default:
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.logf("run: upload rejected: %s", describeRunError(err))
+		writeError(w, http.StatusBadRequest, uploadMessage(err))
 	}
 }
 
-// failRun maps an engine or scoring error. 5xx bodies never carry the
-// internal error (it may name the cluster); it goes to the log instead.
+// uploadMessage is the client-facing text for a rejected upload: one of a
+// fixed set, chosen by the error's kind.
+func uploadMessage(err error) string {
+	switch {
+	case errors.Is(err, errNoFiles):
+		return errNoFiles.Error()
+	case errors.Is(err, errMalformedMultipart):
+		return errMalformedMultipart.Error()
+	case errors.Is(err, otlpin.ErrConsoleExporter):
+		return otlpin.ErrConsoleExporter.Error()
+	case errors.Is(err, otlpin.ErrEmpty):
+		return otlpin.ErrEmpty.Error()
+	case errors.Is(err, otlpin.ErrUnrecognized):
+		return otlpin.ErrUnrecognized.Error()
+	}
+	return "the upload could not be read as OTLP JSON (plain, gzip or zip)"
+}
+
+// failRun maps an engine or scoring error to a fixed classification. The
+// internal error (it may name the cluster) never reaches the body; a
+// classified description goes to the log instead.
 func (s *server) failRun(w http.ResponseWriter, r *http.Request, ri *reqInfo, err error) {
 	switch {
 	case r.Context().Err() != nil:
@@ -195,6 +252,10 @@ func (s *server) failRun(w http.ResponseWriter, r *http.Request, ri *reqInfo, er
 		writeError(w, http.StatusGatewayTimeout, "scoring took too long and was stopped")
 	case errors.Is(err, otlpin.ErrEmpty):
 		writeError(w, http.StatusBadRequest, otlpin.ErrEmpty.Error())
+	case errors.Is(err, engine.ErrBusy):
+		s.logf("run: backend busy: %s", describeRunError(err))
+		w.Header().Set("Retry-After", "30")
+		writeError(w, http.StatusServiceUnavailable, "busy, try again shortly")
 	default:
 		s.logf("run: internal error: %s", describeRunError(err))
 		writeError(w, http.StatusInternalServerError, "internal error")

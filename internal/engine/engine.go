@@ -12,6 +12,10 @@ import (
 	"github.com/ericmustin/vern/internal/otlpin"
 )
 
+// ErrBusy is returned (wrapped) when the backend sheds load, so callers can
+// tell "try again shortly" from a failure.
+var ErrBusy = evaluate.ErrBusy
+
 // LoadStats reports what happened when a sample was loaded. Keys are signals.
 type LoadStats struct {
 	// Sent is the number of items sent (logs: log records plus span events).

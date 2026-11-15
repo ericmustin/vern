@@ -40,6 +40,9 @@ type Options struct {
 	// sensitive-data rule query (evaluate.RunOptions.QueryErrorDetail): set
 	// it only when the log is the user's own terminal, as `vern score` does.
 	QueryErrorDetail bool
+	// FixedErrors limits failed rules' reasons in the report to a fixed
+	// classification (evaluate.RunOptions.FixedErrors).
+	FixedErrors bool
 }
 
 // Score shifts the sample to the present, loads it into eng, evaluates the
@@ -130,6 +133,9 @@ func Score(ctx context.Context, eng engine.Engine, s *otlpin.Sample, opts Option
 	// A discovery failure only affects the sensitive-data rules; the rest of
 	// the run proceeds. The error goes to the log, never into the report.
 	fields, ferr := eng.Fields(ctx, id)
+	if errors.Is(ferr, engine.ErrBusy) {
+		return nil, fmt.Errorf("load sample: %w", ferr)
+	}
 	if ferr != nil {
 		logf("warning: field discovery for run %s failed: %v", id, ferr)
 	}
@@ -175,6 +181,7 @@ func Score(ctx context.Context, eng engine.Engine, s *otlpin.Sample, opts Option
 		FieldsDiscovered: ferr == nil,
 		Logf:             logf,
 		QueryErrorDetail: opts.QueryErrorDetail,
+		FixedErrors:      opts.FixedErrors,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("evaluate: %w", err)

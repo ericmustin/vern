@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
+	"github.com/ericmustin/vern/internal/evaluate"
 	"github.com/ericmustin/vern/internal/otlpin"
 )
 
@@ -412,5 +413,17 @@ func TestLoad_RefreshesFailuresOnlyForSentSignals(t *testing.T) {
 		if !strings.Contains(ls.refreshes[0], sig+"-*.otel-"+string(id)+"::failures") {
 			t.Errorf("missing %s ::failures in %q", sig, ls.refreshes[0])
 		}
+	}
+}
+
+func TestLoad_BreakerIsBusy(t *testing.T) {
+	ls := &loadSrv{otlp: func(w http.ResponseWriter, _ string) {
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"error":{"type":"circuit_breaking_exception"}}`))
+	}}
+	e := newLoadEngine(t, ls, 0)
+	_, err := e.Load(t.Context(), newRunID(t, time.Now()), fullSample())
+	if !errors.Is(err, evaluate.ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
 	}
 }

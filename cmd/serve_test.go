@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,8 +44,8 @@ func TestServeFlags_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("defaults rejected: %v", err)
 	}
-	want := serveFlags{listen: ":8080", maxConcurrent: 1, runTimeout: 120 * time.Second, sweepAge: 10 * time.Minute, sweepEvery: 5 * time.Minute, readyTimeout: 90 * time.Second}
-	if o != want {
+	want := serveFlags{listen: ":8080", maxConcurrent: 1, runTimeout: 120 * time.Second, sweepAge: 10 * time.Minute, sweepEvery: 5 * time.Minute, readyTimeout: 90 * time.Second, ratePerHour: 6, rateBurst: 3, dailyIngest: "2GB"}
+	if !reflect.DeepEqual(o, want) {
 		t.Fatalf("defaults = %+v, want %+v", o, want)
 	}
 }
@@ -73,13 +74,19 @@ func TestServeFlags_EnvDefaults(t *testing.T) {
 		"VERN_SWEEP_AGE":           "20m",
 		"VERN_SWEEP_EVERY":         "1m",
 		"VERN_SETUP_TEMPLATE":      "true",
+		"VERN_RATE_PER_HOUR":       "12",
+		"VERN_RATE_BURST":          "5",
+		"VERN_DAILY_INGEST":        "500MB",
+		"VERN_TRUSTED_PROXIES":     "10.0.0.0/8,172.16.0.0/12",
+		"VERN_HSTS":                "true",
 	}
 	o, err := parseServeFlags(t, nil, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := serveFlags{listen: "127.0.0.1:9999", maxConcurrent: 5, runTimeout: 3 * time.Minute, sweepAge: 20 * time.Minute, sweepEvery: time.Minute, setupTemplate: true, readyTimeout: 90 * time.Second}
-	if o != want {
+	want := serveFlags{listen: "127.0.0.1:9999", maxConcurrent: 5, runTimeout: 3 * time.Minute, sweepAge: 20 * time.Minute, sweepEvery: time.Minute, setupTemplate: true, readyTimeout: 90 * time.Second,
+		ratePerHour: 12, rateBurst: 5, dailyIngest: "500MB", trustedProxy: []string{"10.0.0.0/8", "172.16.0.0/12"}, hsts: true}
+	if !reflect.DeepEqual(o, want) {
 		t.Fatalf("got %+v, want %+v", o, want)
 	}
 
@@ -379,5 +386,64 @@ func TestWaitReady_StopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("waitReady did not stop on cancel")
+	}
+}
+
+func TestServeFlags_PublicLimitsValidation(t *testing.T) {
+	_, err := parseServeFlags(t, []string{"--rate-per-hour=0", "--rate-burst=0", "--daily-ingest=lots", "--trusted-proxy=nope"}, nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, name := range []string{"--rate-per-hour", "--rate-burst", "--daily-ingest", "--trusted-proxy"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error does not name %s: %v", name, err)
+		}
+	}
+}
+
+func TestParseBytes(t *testing.T) {
+	for in, want := range map[string]int64{"2GB": 2 << 30, "500mb": 500 << 20, "64 KB": 64 << 10, "1024": 1024, "7B": 7} {
+		if got, err := parseBytes(in); err != nil || got != want {
+			t.Errorf("parseBytes(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "GB", "-1GB", "0", "1.5GB", "99999999999GB"} {
+		if _, err := parseBytes(in); err == nil {
+			t.Errorf("parseBytes(%q) succeeded", in)
+		}
+	}
+}
+
+func TestParsePrefixes(t *testing.T) {
+	got, err := parsePrefixes([]string{"10.0.0.0/8", " 203.0.113.9 ", ""})
+	if err != nil || len(got) != 2 || got[0].String() != "10.0.0.0/8" || got[1].String() != "203.0.113.9/32" {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}
+
+func TestHealthcheck_HonoursListenAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		"":               "http://127.0.0.1:8080/healthz",
+		":9090":          "http://127.0.0.1:9090/healthz",
+		"0.0.0.0:9090":   "http://127.0.0.1:9090/healthz",
+		"[::]:9090":      "http://127.0.0.1:9090/healthz",
+		"127.0.0.1:7000": "http://127.0.0.1:7000/healthz",
+		"garbage":        "http://127.0.0.1:8080/healthz",
+	} {
+		if got := healthcheckURLFor(in); got != want {
+			t.Errorf("healthcheckURLFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// The hidden command dials the address from VERN_LISTEN_ADDR.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	t.Setenv("VERN_LISTEN_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	if err := healthcheckCmd.RunE(healthcheckCmd, nil); err != nil {
+		t.Errorf("healthcheck against the configured address: %v", err)
+	}
+	t.Setenv("VERN_LISTEN_ADDR", closedPort(t))
+	if err := healthcheckCmd.RunE(healthcheckCmd, nil); err == nil {
+		t.Error("healthcheck against a closed port succeeded")
 	}
 }

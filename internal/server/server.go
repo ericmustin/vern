@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/netip"
 	"path"
 	"runtime/debug"
 	"strings"
@@ -37,14 +38,24 @@ type Config struct {
 	MaxConcurrent int           // <= 0 -> 1 (more needs an Elasticsearch heap over 1 GiB)
 	RunTimeout    time.Duration // <= 0 -> 120s
 	Static        fs.FS         // nil -> no UI, API only
-	Version       string
-	Logf          func(string, ...any) // nil -> log.Printf
+	// RatePerHour and RateBurst bound score runs per client IP (<= 0: 6 an
+	// hour, burst 3). DailyIngestBytes caps decompressed upload bytes per UTC
+	// day across all clients (<= 0: 2 GiB).
+	RatePerHour      int
+	RateBurst        int
+	DailyIngestBytes int64
+	// TrustedProxies are the peers whose X-Forwarded-For is believed; with
+	// none, the header is ignored.
+	TrustedProxies []netip.Prefix
+	HSTS           bool // send Strict-Transport-Security
+	Version        string
+	Logf           func(string, ...any) // nil -> log.Printf
 }
 
 const (
 	defaultMaxConcurrent = 1
 	defaultRunTimeout    = 120 * time.Second
-	readyTimeout         = 5 * time.Second
+	readyTimeout         = 10 * time.Second
 	readyCacheTTL        = 5 * time.Second
 
 	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -57,7 +68,9 @@ type server struct {
 	runTimeout time.Duration
 	logf       func(string, ...any)
 	sem        chan struct{} // one token per running run
-	rules      []byte        // pre-encoded GET /api/v1/rules body; nil if building failed
+	rate       *ipLimiter
+	ingest     *dailyCap
+	rules      []byte // pre-encoded GET /api/v1/rules body; nil if building failed
 	handler    http.Handler
 
 	now      func() time.Time
@@ -95,6 +108,18 @@ func newServer(cfg Config) *server {
 		n = defaultMaxConcurrent
 	}
 	s.sem = make(chan struct{}, n)
+	perHour, burst, daily := cfg.RatePerHour, cfg.RateBurst, cfg.DailyIngestBytes
+	if perHour <= 0 {
+		perHour = defaultRatePerHour
+	}
+	if burst <= 0 {
+		burst = defaultRateBurst
+	}
+	if daily <= 0 {
+		daily = defaultDailyIngestBytes
+	}
+	s.rate = newIPLimiter(perHour, burst)
+	s.ingest = &dailyCap{max: daily}
 
 	if rules, err := buildRules(cfg.Options); err != nil {
 		s.logf("error: building rule methodology: %v", err)
@@ -105,14 +130,27 @@ func newServer(cfg Config) *server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/v1/rules", s.handleRules)
+	mux.HandleFunc("GET /api/v1/limits", s.handleLimits)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeText(w, http.StatusOK, "ok") })
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /", s.handleStatic)
-	s.handler = securityHeaders(s.logRequests(recoverPanics(s.logf, mux)))
+	s.handler = s.securityHeaders(s.logRequests(recoverPanics(s.logf, mux)))
 	return s
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
+
+// handleLimits reports the effective upload limits and run timeout, so the
+// UI never states numbers the server does not enforce.
+func (s *server) handleLimits(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, struct {
+		MaxCompressedBytes   int64 `json:"max_compressed_bytes"`
+		MaxDecompressedBytes int64 `json:"max_decompressed_bytes"`
+		MaxItems             int   `json:"max_items"`
+		MaxFiles             int   `json:"max_files"`
+		RunTimeoutSeconds    int   `json:"run_timeout_seconds"`
+	}{s.limits.MaxCompressedBytes, s.limits.MaxDecompressedBytes, s.limits.MaxItems, s.limits.MaxFiles, int(s.runTimeout.Seconds())})
+}
 
 func (s *server) handleRules(w http.ResponseWriter, r *http.Request) {
 	if s.rules == nil {
@@ -202,13 +240,20 @@ func (s *server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(data))
 }
 
-// securityHeaders sets the CSP and related headers on every response.
-func securityHeaders(next http.Handler) http.Handler {
+// securityHeaders sets the CSP and related headers on every response, and
+// keeps API responses out of caches.
+func (s *server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", contentSecurityPolicy)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
+		if s.cfg.HSTS {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h.Set("Cache-Control", "no-store")
+		}
 		next.ServeHTTP(w, r)
 	})
 }

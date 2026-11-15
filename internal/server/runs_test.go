@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/ericmustin/vern/internal/config"
@@ -507,5 +509,171 @@ func TestRuns_SensitiveCanaryNeverInBodyOrLogs(t *testing.T) {
 	}
 	if out.Markdown == nil || !strings.Contains(*out.Markdown, canaryServicePseudo) {
 		t.Errorf("markdown lacks the pseudonym")
+	}
+}
+
+func TestRuns_ErrorBodiesCarryNoEngineText(t *testing.T) {
+	const leak = "http://es-internal:9200/_query field=user.email.secret_field"
+	cases := []struct {
+		name       string
+		err        error
+		status     int
+		body       string
+		retryAfter string
+	}{
+		{"internal", errors.New("evaluate: post query: " + leak), http.StatusInternalServerError, "internal error", ""},
+		{"busy", fmt.Errorf("load sample: %s: %w", leak, engine.ErrBusy), http.StatusServiceUnavailable, "busy, try again shortly", "30"},
+		{"timeout", fmt.Errorf("evaluate: %s: %w", leak, context.DeadlineExceeded), http.StatusGatewayTimeout, "scoring took too long and was stopped", ""},
+	}
+	for _, c := range cases {
+		logs := &logCapture{}
+		s := newTestServer(t, Config{Engine: &fakeEngine{}, Score: fakeScore(nil, nil, nil, c.err), Logf: logs.logf})
+		rec := serve(s, postRaw(readDemo(t)))
+		if rec.Code != c.status || errorBody(t, rec) != c.body {
+			t.Errorf("%s: %d %s, want %d %q", c.name, rec.Code, rec.Body.String(), c.status, c.body)
+		}
+		if got := rec.Header().Get("Retry-After"); got != c.retryAfter {
+			t.Errorf("%s: Retry-After = %q, want %q", c.name, got, c.retryAfter)
+		}
+		for _, part := range []string{"es-internal", "9200", "secret_field"} {
+			if strings.Contains(rec.Body.String(), part) || strings.Contains(logs.String(), part) {
+				t.Errorf("%s: %q leaked into the body or log", c.name, part)
+			}
+		}
+	}
+}
+
+func TestRuns_UploadErrorsAreFixedMessages(t *testing.T) {
+	const name = "customer-acme-secrets.json"
+	s := newTestServer(t, Config{Engine: &fakeEngine{}, RatePerHour: 1000, RateBurst: 1000})
+	bodies := map[string][]byte{
+		"unrecognized": []byte(`{"hello":"world"}`),
+		"truncated":    []byte(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"upload-secret-value"`),
+		"bad gzip":     append([]byte{0x1f, 0x8b}, []byte("upload-secret-value")...),
+	}
+	for label, data := range bodies {
+		rec := serve(s, postMultipart(t, []part{{field: "files", filename: name, data: data}}))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s, want 400", label, rec.Code, rec.Body.String())
+			continue
+		}
+		if strings.Contains(rec.Body.String(), "acme") || strings.Contains(rec.Body.String(), "upload-secret-value") {
+			t.Errorf("%s: upload value in body %s", label, rec.Body.String())
+		}
+	}
+	// The messages a user needs are still specific.
+	rec := serve(s, postRaw(nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(errorBody(t, rec), "no telemetry") {
+		t.Errorf("empty upload: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRuns_ReportReasonsAreFixed(t *testing.T) {
+	const leak = "http://es-internal:9200 secret_field"
+	eng := &fakeEngine{}
+	eng.rowsErr = errors.New("HTTP 400: " + leak)
+	s := newTestServer(t, Config{Engine: eng, Score: samplescore.Score})
+	rec := serve(s, postRaw(readDemo(t)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "es-internal") || strings.Contains(rec.Body.String(), "secret_field") {
+		t.Fatalf("engine text in the report: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "query failed (HTTP 400)") {
+		t.Fatalf("no classified reason in the report")
+	}
+}
+
+func TestRuns_BusyEngineAbortsWholeRun(t *testing.T) {
+	eng := &fakeEngine{}
+	eng.rowsErr = fmt.Errorf("HTTP 429: %w", engine.ErrBusy)
+	s := newTestServer(t, Config{Engine: eng, Score: samplescore.Score})
+	rec := serve(s, postRaw(readDemo(t)))
+	if rec.Code != http.StatusServiceUnavailable || errorBody(t, rec) != "busy, try again shortly" || rec.Header().Get("Retry-After") != "30" {
+		t.Fatalf("busy run = %d %s (Retry-After %q)", rec.Code, rec.Body.String(), rec.Header().Get("Retry-After"))
+	}
+	if eng.purgeCount() != 1 {
+		t.Fatalf("Purge called %d times, want 1", eng.purgeCount())
+	}
+}
+
+func TestRuns_CacheHeaders(t *testing.T) {
+	for _, hsts := range []bool{false, true} {
+		s := newTestServer(t, Config{Engine: &fakeEngine{}, Score: fakeScore(nil, nil, nil, nil), HSTS: hsts, Static: fstest.MapFS{"index.html": {Data: []byte("x")}}})
+		reqs := map[string]*http.Request{
+			"run":    postRaw(readDemo(t)),
+			"rules":  httptest.NewRequest(http.MethodGet, "/api/v1/rules", nil),
+			"limits": httptest.NewRequest(http.MethodGet, "/api/v1/limits", nil),
+			"404":    httptest.NewRequest(http.MethodGet, "/api/v1/nope", nil),
+		}
+		for name, req := range reqs {
+			rec := serve(s, req)
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("hsts=%v %s: Cache-Control = %q", hsts, name, got)
+			}
+			want := ""
+			if hsts {
+				want = "max-age=31536000"
+			}
+			if got := rec.Header().Get("Strict-Transport-Security"); got != want {
+				t.Errorf("hsts=%v %s: Strict-Transport-Security = %q, want %q", hsts, name, got, want)
+			}
+		}
+		if got := serve(s, httptest.NewRequest(http.MethodGet, "/", nil)).Header().Get("Cache-Control"); got == "no-store" {
+			t.Errorf("static page carries no-store")
+		}
+	}
+}
+
+func TestLimitsEndpoint(t *testing.T) {
+	s := newTestServer(t, Config{Engine: &fakeEngine{}, RunTimeout: 90 * time.Second})
+	rec := serve(s, httptest.NewRequest(http.MethodGet, "/api/v1/limits", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var got map[string]int64
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{
+		"max_compressed_bytes":   otlpin.DefaultLimits.MaxCompressedBytes,
+		"max_decompressed_bytes": otlpin.DefaultLimits.MaxDecompressedBytes,
+		"max_items":              int64(otlpin.DefaultLimits.MaxItems),
+		"max_files":              int64(otlpin.DefaultLimits.MaxFiles),
+		"run_timeout_seconds":    90,
+	}
+	if len(got) != len(want) {
+		t.Errorf("limits = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %d, want %d", k, got[k], v)
+		}
+	}
+}
+
+// A run that outlives the server's initial WriteTimeout still gets its
+// response, because the handler extends the deadline.
+func TestServe_WriteDeadline(t *testing.T) {
+	h := newTestServer(t, Config{
+		Engine: &fakeEngine{},
+		Score: func(ctx context.Context, eng engine.Engine, s *otlpin.Sample, opts samplescore.Options) (*evaluate.Report, error) {
+			time.Sleep(600 * time.Millisecond)
+			return &evaluate.Report{Sample: &evaluate.SampleInfo{RunID: "run-slow"}}, nil
+		},
+	})
+	srv := httptest.NewUnstartedServer(h)
+	srv.Config.WriteTimeout = 200 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL+"/api/v1/runs", "application/gzip", bytes.NewReader(readDemo(t)))
+	if err != nil {
+		t.Fatalf("slow run got no response: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
 	}
 }

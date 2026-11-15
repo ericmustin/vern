@@ -26,6 +26,9 @@ type Sample struct {
 	Logs    plog.Logs
 	Metrics pmetric.Metrics
 	Notes   []string // non-fatal decode notes, shown in the report
+	// DecompressedBytes is how much was read after decompression, summed
+	// over all inputs.
+	DecompressedBytes int64
 }
 
 // Input is one named byte stream (a file or an uploaded part).
@@ -79,6 +82,7 @@ func Decode(inputs []Input, lim Limits) (*Sample, error) {
 	if d.objects == 0 {
 		return nil, ErrEmpty
 	}
+	d.s.DecompressedBytes = d.decomp.n
 	return d.s, nil
 }
 

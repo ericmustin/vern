@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,12 +18,21 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
 	"github.com/ericmustin/vern/internal/engine"
+	"github.com/ericmustin/vern/internal/evaluate"
 	"github.com/ericmustin/vern/internal/otlpin"
 )
 
 // ErrTooManyRequests is returned when Elasticsearch answers 429. The run is
 // aborted without retry.
-var ErrTooManyRequests = errors.New("elasticsearch rejected the sample (429 Too Many Requests); run aborted")
+var ErrTooManyRequests error = tooManyRequests{}
+
+// tooManyRequests is also an engine.ErrBusy.
+type tooManyRequests struct{}
+
+func (tooManyRequests) Error() string {
+	return "elasticsearch rejected the sample (429 Too Many Requests); run aborted"
+}
+func (tooManyRequests) Unwrap() error { return engine.ErrBusy }
 
 // Load sanitizes s (it mutates the sample), posts it to the native OTLP
 // endpoints as protobuf in batches no larger than BatchBytes, then reconciles
@@ -150,7 +158,7 @@ func (e *Engine) post(ctx context.Context, signal string, raw []byte) ([]byte, e
 		return nil, fmt.Errorf("send %s: %w", signal, err)
 	}
 	switch {
-	case status == http.StatusTooManyRequests:
+	case evaluate.Busy(status, body):
 		return nil, ErrTooManyRequests
 	case status < 200 || status > 299:
 		hint := ""
@@ -193,6 +201,9 @@ func (e *Engine) reconcile(ctx context.Context, id engine.RunID, st *engine.Load
 	if err != nil {
 		return fmt.Errorf("refresh: %w", err)
 	}
+	if evaluate.Busy(status, body) {
+		return fmt.Errorf("refresh: %w", engine.ErrBusy)
+	}
 	if status != http.StatusOK {
 		return fmt.Errorf("refresh: status %d: %s", status, printable(body, 500))
 	}
@@ -226,6 +237,9 @@ func (e *Engine) count(ctx context.Context, pattern string) (int, error) {
 	status, body, err := e.do(ctx, http.MethodPost, "_query?format=json", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return 0, err
+	}
+	if evaluate.Busy(status, body) {
+		return 0, fmt.Errorf("es|ql: %w", engine.ErrBusy)
 	}
 	if status != http.StatusOK {
 		return 0, fmt.Errorf("es|ql status %d: %s", status, printable(body, 500))

@@ -78,6 +78,9 @@ func (e *Executor) Execute(ctx context.Context, query string) ([]evaluate.Row, e
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
+	if evaluate.Busy(resp.StatusCode, raw) {
+		return nil, fmt.Errorf("HTTP %d: %w", resp.StatusCode, evaluate.ErrBusy)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(raw), 500))
 	}

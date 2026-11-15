@@ -10,6 +10,8 @@
   var EXAMPLE_URL = '/examples/demo.jsonl.gz';
   var EXAMPLE_NAME = 'demo.jsonl.gz';
   var SCORING_TEXT = 'Scoring: loading, evaluating, deleting…';
+  var LIMITS_URL = '/api/v1/limits';
+  // Replaced from LIMITS_URL when the page loads; this text stays if that fails.
   var LIMITS_TEXT = 'Uploads are limited to 30 MB compressed, 200 MB decompressed and 500,000 items.';
 
   var IMPACTS = [
@@ -136,7 +138,7 @@
         break;
       case 429:
       case 503:
-        showError(retryText(res));
+        showError(retryText(res), msg);
         break;
       case 504:
         showError('Scoring timed out.', 'A run stops after 120 seconds. Try a smaller sample.');
@@ -715,7 +717,30 @@
     });
   }
 
+  function megabytes(n) {
+    return Math.round(n / (1 << 20)) + ' MB';
+  }
+
+  // Shows the limits the server enforces. A failure keeps the static text.
+  async function loadLimits() {
+    try {
+      var res = await fetch(LIMITS_URL);
+      if (!res.ok) return;
+      var l = await res.json();
+      var parts = [l.max_compressed_bytes, l.max_decompressed_bytes, l.max_items, l.run_timeout_seconds];
+      if (!parts.every(function (n) { return typeof n === 'number' && isFinite(n) && n > 0; })) return;
+      LIMITS_TEXT = 'Uploads are limited to ' + megabytes(l.max_compressed_bytes) + ' compressed, ' +
+        megabytes(l.max_decompressed_bytes) + ' decompressed and ' + l.max_items.toLocaleString('en-US') + ' items.';
+      $('limits').textContent = 'Limits: ' + megabytes(l.max_compressed_bytes) + ' compressed, ' +
+        megabytes(l.max_decompressed_bytes) + ' decompressed, ' + l.max_items.toLocaleString('en-US') +
+        ' items. A run stops after ' + l.run_timeout_seconds + ' seconds.';
+    } catch (e) {
+      // Keep the static text.
+    }
+  }
+
   function init() {
+    loadLimits();
     wireUpload();
     wireDownloads();
     $('service').addEventListener('change', function (ev) {

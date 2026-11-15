@@ -63,7 +63,7 @@ services:
       # Distroless: no shell or curl, so vern probes its own /healthz.
       test: ["CMD", "/vern", "healthcheck"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 3
       start_period: 10s
     # Room for an in-flight run to finish and purge before docker sends

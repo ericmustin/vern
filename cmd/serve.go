@@ -7,8 +7,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -34,9 +37,11 @@ const (
 	serveShutdownGrace = 10 * time.Second
 	// serveReadyBackoffMax caps the wait between background Ready attempts.
 	serveReadyBackoffMax = 30 * time.Second
-	// healthcheckURL is what `vern healthcheck` probes: the compose
-	// healthcheck runs it inside the container, next to `vern serve`.
-	healthcheckURL = "http://127.0.0.1:8080/healthz"
+	// defaultListen is vern serve's listen address, and so what `vern
+	// healthcheck` probes when VERN_LISTEN_ADDR is unset.
+	defaultListen = ":8080"
+	// healthcheckTimeout covers the probe; a loaded host can answer slowly.
+	healthcheckTimeout = 10 * time.Second
 )
 
 // serveReadyBackoffStart is the first wait between background Ready
@@ -54,6 +59,12 @@ type serveFlags struct {
 	sweepEvery    time.Duration
 	setupTemplate bool
 	readyTimeout  time.Duration
+
+	ratePerHour  int
+	rateBurst    int
+	dailyIngest  string
+	trustedProxy []string
+	hsts         bool
 }
 
 // serveEnv maps flag names to the env vars they default from.
@@ -64,15 +75,25 @@ var serveEnv = []struct{ flag, env string }{
 	{"sweep-age", "VERN_SWEEP_AGE"},
 	{"sweep-every", "VERN_SWEEP_EVERY"},
 	{"setup-template", "VERN_SETUP_TEMPLATE"},
+	{"rate-per-hour", "VERN_RATE_PER_HOUR"},
+	{"rate-burst", "VERN_RATE_BURST"},
+	{"daily-ingest", "VERN_DAILY_INGEST"},
+	{"trusted-proxy", "VERN_TRUSTED_PROXIES"},
+	{"hsts", "VERN_HSTS"},
 }
 
 func (o *serveFlags) register(f *pflag.FlagSet) {
-	f.StringVar(&o.listen, "listen", ":8080", "address to listen on, host:port (env VERN_LISTEN_ADDR)")
+	f.StringVar(&o.listen, "listen", defaultListen, "address to listen on, host:port (env VERN_LISTEN_ADDR)")
 	f.IntVar(&o.maxConcurrent, "max-concurrent", 1, "maximum concurrent score runs; more get 429. Above 1 needs an Elasticsearch heap over 1 GiB: with the sensitive-data rules, two concurrent runs trip a 1 GiB node's circuit breaker (env VERN_MAX_CONCURRENT_RUNS)")
 	f.DurationVar(&o.runTimeout, "run-timeout", 120*time.Second, "deadline for one score run, at most 10m (env VERN_RUN_TIMEOUT)")
 	f.DurationVar(&o.sweepAge, "sweep-age", 10*time.Minute, "the janitor deletes leftover runs older than this; at least --run-timeout + 1m (env VERN_SWEEP_AGE)")
 	f.DurationVar(&o.sweepEvery, "sweep-every", 5*time.Minute, "how often the janitor sweeps (env VERN_SWEEP_EVERY)")
 	f.BoolVar(&o.setupTemplate, "setup-template", false, "create the metrics-otel@custom component template if absent; cluster-wide, so only for single-node or ephemeral clusters (env VERN_SETUP_TEMPLATE)")
+	f.IntVar(&o.ratePerHour, "rate-per-hour", 6, "score runs per client IP per hour (env VERN_RATE_PER_HOUR)")
+	f.IntVar(&o.rateBurst, "rate-burst", 3, "runs a client IP may make back to back before the hourly rate applies (env VERN_RATE_BURST)")
+	f.StringVar(&o.dailyIngest, "daily-ingest", "2GB", "decompressed upload bytes accepted per UTC day across all clients, e.g. 500MB or 2GB; the upload that crosses it finishes, later ones get 429 until midnight UTC (env VERN_DAILY_INGEST)")
+	f.StringSliceVar(&o.trustedProxy, "trusted-proxy", nil, "CIDR of a reverse proxy whose X-Forwarded-For is believed, repeatable or comma-separated; with none the header is ignored (env VERN_TRUSTED_PROXIES)")
+	f.BoolVar(&o.hsts, "hsts", false, "send Strict-Transport-Security; only behind HTTPS (env VERN_HSTS)")
 	f.DurationVar(&o.readyTimeout, "ready-timeout", 90*time.Second, "how long one bootstrap attempt waits for Elasticsearch to answer; serve keeps retrying in the background")
 }
 
@@ -115,7 +136,61 @@ func (o *serveFlags) validate() []error {
 	if o.readyTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("--ready-timeout must be positive, got %s", o.readyTimeout))
 	}
+	if o.ratePerHour < 1 {
+		errs = append(errs, fmt.Errorf("--rate-per-hour must be at least 1, got %d", o.ratePerHour))
+	}
+	if o.rateBurst < 1 {
+		errs = append(errs, fmt.Errorf("--rate-burst must be at least 1, got %d", o.rateBurst))
+	}
+	if _, err := parseBytes(o.dailyIngest); err != nil {
+		errs = append(errs, fmt.Errorf("--daily-ingest: %w", err))
+	}
+	if _, err := parsePrefixes(o.trustedProxy); err != nil {
+		errs = append(errs, fmt.Errorf("--trusted-proxy: %w", err))
+	}
 	return errs
+}
+
+// parseBytes reads a byte count with an optional KB/MB/GB suffix (powers of
+// 1024, case-insensitive; no suffix means bytes).
+func parseBytes(s string) (int64, error) {
+	t := strings.ToUpper(strings.TrimSpace(s))
+	mult := int64(1)
+	for _, u := range []struct {
+		suffix string
+		mult   int64
+	}{{"GB", 1 << 30}, {"MB", 1 << 20}, {"KB", 1 << 10}, {"B", 1}} {
+		if strings.HasSuffix(t, u.suffix) {
+			t, mult = strings.TrimSpace(strings.TrimSuffix(t, u.suffix)), u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(t, 10, 64)
+	if err != nil || n < 1 || n > (1<<62)/mult {
+		return 0, fmt.Errorf("%q is not a positive size such as 500MB or 2GB", s)
+	}
+	return n * mult, nil
+}
+
+// parsePrefixes parses CIDRs; a bare address is its own /32 or /128.
+func parsePrefixes(in []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			a, aerr := netip.ParseAddr(s)
+			if aerr != nil {
+				return nil, fmt.Errorf("%q is not a CIDR or IP address", s)
+			}
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 
 var serveOpts serveFlags
@@ -148,11 +223,11 @@ for in-flight runs to finish and purge.`,
 // distroless image has no shell or curl.
 var healthcheckCmd = &cobra.Command{
 	Use:    "healthcheck",
-	Short:  "Exit 0 if vern serve on 127.0.0.1:8080 answers /healthz with 200",
+	Short:  "Exit 0 if vern serve answers /healthz with 200 on VERN_LISTEN_ADDR (default :8080)",
 	Hidden: true,
 	Args:   cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return healthcheck(cmd.Context(), healthcheckURL)
+		return healthcheck(cmd.Context(), healthcheckURLFor(os.Getenv("VERN_LISTEN_ADDR")))
 	},
 }
 
@@ -217,6 +292,9 @@ func serve(ctx context.Context, o serveFlags, creds esCredentials, cfg *config.C
 			ReadyTimeout:   o.readyTimeout,
 		})
 	}
+	// Both were validated by resolve; the zero values would pick defaults.
+	dailyIngest, _ := parseBytes(o.dailyIngest)
+	trusted, _ := parsePrefixes(o.trustedProxy)
 	handler := server.New(server.Config{
 		Engine:        eng,
 		Score:         h.score,
@@ -224,8 +302,14 @@ func serve(ctx context.Context, o serveFlags, creds esCredentials, cfg *config.C
 		MaxConcurrent: o.maxConcurrent,
 		RunTimeout:    o.runTimeout,
 		Static:        web.FS(),
-		Version:       version,
-		Logf:          logf,
+
+		RatePerHour:      o.ratePerHour,
+		RateBurst:        o.rateBurst,
+		DailyIngestBytes: dailyIngest,
+		TrustedProxies:   trusted,
+		HSTS:             o.hsts,
+		Version:          version,
+		Logf:             logf,
 	})
 
 	ln, err := net.Listen("tcp", o.listen)
@@ -307,12 +391,28 @@ func waitReady(ctx context.Context, eng engine.Engine, logf func(string, ...any)
 	}
 }
 
+// healthcheckURLFor is the /healthz URL for a listen address: a wildcard or
+// empty host means the loopback, which is where the probe runs.
+func healthcheckURLFor(listen string) string {
+	if listen == "" {
+		listen = defaultListen
+	}
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		host, port = "", strings.TrimPrefix(defaultListen, ":")
+	}
+	if a, perr := netip.ParseAddr(host); host == "" || (perr == nil && a.IsUnspecified()) {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz"
+}
+
 // healthcheck GETs url and fails unless it answers 200.
 func healthcheck(ctx context.Context, url string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, healthcheckTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

@@ -107,6 +107,9 @@ type RunOptions struct {
 	// own (vern score's terminal), never for a shared server log; otherwise
 	// Logf gets the classification only.
 	QueryErrorDetail bool
+	// FixedErrors limits every failed rule's reason to a fixed classification
+	// (as for sensitive rules), for reports that are public API responses.
+	FixedErrors bool
 }
 
 // SampleInfo describes the OTLP sample a score run evaluated.

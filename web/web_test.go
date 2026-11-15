@@ -70,13 +70,41 @@ func TestFS_Conforms(t *testing.T) {
 // TestNoUnsafeDOMSinks: every value from an upload reaches the page through
 // textContent or attributes, never through an HTML-parsing sink.
 func TestNoUnsafeDOMSinks(t *testing.T) {
-	sinks := []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("}
+	sinks := []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"}
 	for name, src := range readAll(t, ".js") {
 		for _, s := range sinks {
 			if strings.Contains(src, s) {
 				t.Errorf("%s contains %q", name, s)
 			}
 		}
+	}
+}
+
+// stringTimerRe matches setTimeout/setInterval given a string (code) instead
+// of a function.
+var stringTimerRe = regexp.MustCompile(`set(?:Timeout|Interval)\(\s*["'` + "`" + `]`)
+
+// TestNoStringTimers: a string timer is eval by another name.
+func TestNoStringTimers(t *testing.T) {
+	for name, src := range readAll(t, ".js") {
+		if m := stringTimerRe.FindString(src); m != "" {
+			t.Errorf("%s uses a string timer: %q", name, m)
+		}
+	}
+}
+
+// TestAppReadsLimitsFromAPI: the Limits line comes from the server, with the
+// static text only as the fallback.
+func TestAppReadsLimitsFromAPI(t *testing.T) {
+	src := readAll(t, ".js")["app.js"]
+	for _, want := range []string{"/api/v1/limits", "max_decompressed_bytes", "run_timeout_seconds", "$('limits').textContent"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	html, err := fs.ReadFile(FS(), "index.html")
+	if err != nil || !strings.Contains(string(html), `id="limits"`) {
+		t.Errorf(`index.html lacks the id="limits" element: %v`, err)
 	}
 }
 

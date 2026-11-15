@@ -35,6 +35,7 @@ type fakeEngine struct {
 	blockLoads  int           // this many Load calls block until their ctx is done
 	loadEntered chan struct{} // receives once per blocking Load, if non-nil
 	rows        []evaluate.Row
+	rowsErr     error // every rule query fails with this
 }
 
 func (f *fakeEngine) setReadyErr(err error) {
@@ -70,13 +71,13 @@ func (f *fakeEngine) Load(ctx context.Context, id engine.RunID, s *otlpin.Sample
 
 func (f *fakeEngine) Session(id engine.RunID) (evaluate.Executor, config.IndexPatterns) {
 	f.mu.Lock()
-	rows := f.rows
+	rows, rowsErr := f.rows, f.rowsErr
 	f.mu.Unlock()
 	if rows == nil {
 		rows = []evaluate.Row{{ServiceName: "svc", Passed: true, Extent: 0}}
 	}
 	return execFunc(func(ctx context.Context, q string) ([]evaluate.Row, error) {
-		return rows, nil
+		return rows, rowsErr
 	}), config.IndexPatterns{Traces: "t", Logs: "l", Metrics: "m"}
 }
 

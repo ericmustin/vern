@@ -151,7 +151,7 @@ func Run(ctx context.Context, cfg *config.Config, exec Executor, opts RunOptions
 		rr.RuleID = er.SpecRuleID
 		rr.Status = StatusError
 		rr.Reason = er.Reason
-		if er.Mapping.Sensitive {
+		if er.Mapping.Sensitive || opts.FixedErrors {
 			// Template errors can quote template data (field names).
 			rr.Reason = "query could not be built"
 			logSensitiveError(logf, opts.QueryErrorDetail, rr.RuleID, rr.Reason, errors.New(er.Reason))
@@ -231,13 +231,21 @@ func Run(ctx context.Context, cfg *config.Config, exec Executor, opts RunOptions
 	}
 	wg.Wait()
 
+	// A busy backend fails the whole run: a score missing the rules that hit
+	// the breaker would be wrong, not partial.
+	for _, p := range queue {
+		if errors.Is(p.err, ErrBusy) {
+			return nil, ErrBusy
+		}
+	}
+
 	var scoreOutcomes []score.Outcome
 	for _, p := range queue {
 		rr := &results[p.idx]
 		if p.err != nil {
 			rr.Status = StatusError
 			rr.Reason = p.err.Error()
-			if p.rm.Sensitive {
+			if p.rm.Sensitive || opts.FixedErrors {
 				rr.Reason = queryErrorReason(p.err)
 				logSensitiveError(logf, opts.QueryErrorDetail, rr.RuleID, rr.Reason, p.err)
 			}

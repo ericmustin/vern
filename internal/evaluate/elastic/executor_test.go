@@ -1,7 +1,10 @@
 package elastic
 
 import (
+	"errors"
+
 	"context"
+	"github.com/ericmustin/vern/internal/evaluate"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -193,5 +196,28 @@ func TestExecute_InvalidURLNotEchoed(t *testing.T) {
 	_, err := e.Execute(context.Background(), "FROM x")
 	if err == nil || strings.Contains(err.Error(), "s3cret") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestExecute_BusyIsErrBusy(t *testing.T) {
+	for name, c := range map[string]struct {
+		status int
+		body   string
+	}{
+		"429":     {429, `{"error":"too many requests"}`},
+		"breaker": {503, `{"error":{"type":"circuit_breaking_exception","reason":"Data too large"}}`},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(c.status)
+			_, _ = w.Write([]byte(c.body))
+		}))
+		_, err := New(srv.URL, "").Execute(context.Background(), "FROM x")
+		srv.Close()
+		if !errors.Is(err, evaluate.ErrBusy) {
+			t.Errorf("%s: err = %v, want ErrBusy", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "Data too large") {
+			t.Errorf("%s: busy error carries the response body: %v", name, err)
+		}
 	}
 }
