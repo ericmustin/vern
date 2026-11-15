@@ -45,6 +45,16 @@ billing_account() {
   echo "$acct"
 }
 
+# Cloud Run's request log stores each client's IP, user agent and referer, so
+# it is excluded from the _Default sink; vern's own request lines remain.
+EXCLUSION="vern-$SERVICE-requests"
+exclusion_present() {
+  local names
+  names=$(g logging sinks describe _Default --format='value(exclusions[].name)')
+  case ";$names;" in *";$EXCLUSION;"*) return 0 ;; esac
+  return 1
+}
+
 budget_names() {
   g billing budgets list --billing-account="$1" --filter="displayName=$BUDGET_NAME" --format='value(name)'
 }
@@ -72,13 +82,16 @@ if [ "$DELETE" = 1 ]; then
   for b in $(budget_names "$acct"); do
     g billing budgets delete "$b" --billing-account="$acct"
   done
+  if exclusion_present; then
+    g logging sinks update _Default --remove-exclusions="$EXCLUSION"
+  fi
   echo "Deleted service $SERVICE, repository $REPO and budget $BUDGET_NAME."
   exit 0
 fi
 
 # 1. Enable only the APIs this needs.
 g services enable run.googleapis.com artifactregistry.googleapis.com \
-  cloudbilling.googleapis.com billingbudgets.googleapis.com
+  cloudbilling.googleapis.com billingbudgets.googleapis.com logging.googleapis.com
 
 # 2. Create the repository if missing.
 if ! g artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2>&1; then
@@ -113,6 +126,12 @@ rm -f "$RENDERED"
 trap - EXIT
 g run services add-iam-policy-binding "$SERVICE" --region "$REGION" \
   --member=allUsers --role=roles/run.invoker
+
+# Exclude the platform request log (client IPs) from storage, if not yet.
+if ! exclusion_present; then
+  FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND log_id(\"run.googleapis.com/requests\")"
+  g logging sinks update _Default --add-exclusion="name=$EXCLUSION,filter=$FILTER"
+fi
 
 # 5. Budget alert at 50%, 90% and 100%, if missing.
 acct=$(billing_account)

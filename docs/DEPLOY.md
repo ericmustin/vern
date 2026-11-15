@@ -21,7 +21,7 @@ GCLOUD_CONFIG=my-config GCP_PROJECT=my-project deploy/cloudrun/deploy.sh
 
 `GCLOUD_CONFIG` names a gcloud configuration, and every gcloud call passes it with `--project`, so the active configuration is never used. Optional env: `REGION` (default `us-central1`), `SERVICE` (`vern`), `BUDGET_USD` (`30`) and `IMAGE`, which skips the build.
 
-The script is safe to re-run. It enables the four APIs it needs, creates the Artifact Registry repository `vern`, builds and pushes the image, deploys the service with public access, creates a budget alert at 50%, 90% and 100%, and prints the URL. The push uses a short-lived token in a temporary docker config, so your docker config is not changed. Elasticsearch comes from Docker Hub.
+The script is safe to re-run. It enables the four APIs it needs, creates the Artifact Registry repository `vern`, builds and pushes the image, deploys the service with public access, creates a budget alert at 50%, 90% and 100%, and prints the URL. The push uses a short-lived token in a temporary docker config, so your docker config is not changed. Elasticsearch comes from Docker Hub. It also excludes Cloud Run's request logs, which hold client IPs, so the hosted instance logs only vern's own request lines, as the Privacy page states.
 
 The project needs a linked billing account. Remove everything with:
 

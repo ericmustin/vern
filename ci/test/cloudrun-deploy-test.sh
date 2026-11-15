@@ -27,6 +27,8 @@ case "$*" in
     [ -z "${STUB_NOTFOUND:-}" ] || { echo "ERROR: (gcloud.artifacts.repositories.delete) NOT_FOUND: Requested entity was not found." >&2; exit 1; } ;;
   "artifacts repositories describe"*)
     [ -n "${STUB_REPO_EXISTS:-}" ] || exit 1 ;;
+  "logging sinks describe"*)
+    [ -z "${STUB_EXCL_EXISTS:-}" ] || echo "vern-vern-requests" ;;
   "run services delete"*)
     [ -z "${STUB_NOTFOUND:-}" ] || { echo "ERROR: (gcloud.run.services.delete) Service [vern-spike] could not be found." >&2; exit 1; }
     [ -z "${STUB_DELETE_ERR:-}" ] || { echo "$STUB_DELETE_ERR" >&2; exit 1; } ;;
@@ -88,7 +90,7 @@ while IFS= read -r line; do
   case "$line" in *" --configuration=test-config"*" --project=my-project") ;; *) fail "call lacks both flags: $line" ;; esac
 done <"$T/gcloud.log"
 [ ! -s "$T/docker.log" ] || fail "docker ran although IMAGE was set"
-grep -q "^services enable run.googleapis.com artifactregistry.googleapis.com cloudbilling.googleapis.com billingbudgets.googleapis.com " "$T/gcloud.log" || fail "APIs not enabled as specified"
+grep -q "^services enable run.googleapis.com artifactregistry.googleapis.com cloudbilling.googleapis.com billingbudgets.googleapis.com logging.googleapis.com " "$T/gcloud.log" || fail "APIs not enabled as specified"
 grep -q "^artifacts repositories create vern .*--location us-central1" "$T/gcloud.log" || fail "repository not created"
 grep -q "^run services replace .* --region us-central1" "$T/gcloud.log" || fail "service not deployed"
 grep -q "^run services add-iam-policy-binding vern --region us-central1 --member=allUsers --role=roles/run.invoker" "$T/gcloud.log" || fail "no public invoker binding"
@@ -103,11 +105,14 @@ grep -q 'maxScale: "1"' "$T/rendered.yaml" || fail "rendered maxScale"
 # shellcheck disable=SC2016
 if grep -q '\${' "$T/rendered.yaml"; then fail "unrendered placeholder left in service.yaml"; fi
 grep -q "https://stub.invalid" "$T/stdout" || fail "URL not printed"
+exc=$(grep "^logging sinks update _Default --add-exclusion=" "$T/gcloud.log") || fail "request-log exclusion not added"
+case "$exc" in *'name=vern-vern-requests,filter=resource.type="cloud_run_revision" AND resource.labels.service_name="vern" AND log_id("run.googleapis.com/requests")'*) ;; *) fail "exclusion filter wrong: $exc" ;; esac
 
 # Re-run when everything exists: nothing is created again.
 new_sandbox
-run_script "${BASE[@]}" IMAGE=img STUB_REPO_EXISTS=1 STUB_BUDGET_EXISTS=1 --
+run_script "${BASE[@]}" IMAGE=img STUB_REPO_EXISTS=1 STUB_BUDGET_EXISTS=1 STUB_EXCL_EXISTS=1 --
 [ "$RC" -eq 0 ] || { cat "$T/stderr"; fail "idempotent re-run exited $RC"; }
+if grep -q "logging sinks update" "$T/gcloud.log"; then fail "re-run re-added an existing exclusion"; fi
 if grep -q "repositories create\|budgets create" "$T/gcloud.log"; then fail "re-run created an existing resource"; fi
 
 # Custom SERVICE, REGION and BUDGET_USD flow through.
@@ -152,11 +157,12 @@ run_script "${BASE[@]}" -- --delete
 
 # --delete --yes removes service, repository and budget.
 new_sandbox
-run_script "${BASE[@]}" STUB_BUDGET_EXISTS=1 -- --delete --yes
+run_script "${BASE[@]}" STUB_BUDGET_EXISTS=1 STUB_EXCL_EXISTS=1 -- --delete --yes
 [ "$RC" -eq 0 ] || { cat "$T/stderr"; fail "--delete --yes exited $RC"; }
 grep -q "^run services delete vern --region us-central1" "$T/gcloud.log" || fail "service not deleted"
 grep -q "^artifacts repositories delete vern --location us-central1" "$T/gcloud.log" || fail "repository not deleted"
 grep -q "^billing budgets delete billingAccounts/AAAA-BBBB-CCCC/budgets/b1" "$T/gcloud.log" || fail "budget not deleted"
+grep -q "^logging sinks update _Default --remove-exclusions=vern-vern-requests " "$T/gcloud.log" || fail "exclusion not removed"
 while IFS= read -r line; do
   case "$line" in *" --configuration=test-config"*" --project=my-project") ;; *) fail "delete call lacks both flags: $line" ;; esac
 done <"$T/gcloud.log"
