@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"net/netip"
 	"path"
 	"runtime/debug"
 	"strings"
@@ -38,18 +37,9 @@ type Config struct {
 	MaxConcurrent int           // <= 0 -> 1 (more needs an Elasticsearch heap over 1 GiB)
 	RunTimeout    time.Duration // <= 0 -> 120s
 	Static        fs.FS         // nil -> no UI, API only
-	// RatePerHour and RateBurst bound score runs per client IP (<= 0: 6 an
-	// hour, burst 3). DailyIngestBytes caps decompressed upload bytes per UTC
-	// day across all clients (<= 0: 2 GiB).
-	RatePerHour      int
-	RateBurst        int
-	DailyIngestBytes int64
-	// TrustedProxies are the peers whose X-Forwarded-For is believed; with
-	// none, the header is ignored.
-	TrustedProxies []netip.Prefix
-	HSTS           bool // send Strict-Transport-Security
-	Version        string
-	Logf           func(string, ...any) // nil -> log.Printf
+	HSTS          bool          // send Strict-Transport-Security
+	Version       string
+	Logf          func(string, ...any) // nil -> log.Printf
 }
 
 const (
@@ -68,9 +58,7 @@ type server struct {
 	runTimeout time.Duration
 	logf       func(string, ...any)
 	sem        chan struct{} // one token per running run
-	rate       *ipLimiter
-	ingest     *dailyCap
-	rules      []byte // pre-encoded GET /api/v1/rules body; nil if building failed
+	rules      []byte        // pre-encoded GET /api/v1/rules body; nil if building failed
 	handler    http.Handler
 
 	now      func() time.Time
@@ -108,18 +96,6 @@ func newServer(cfg Config) *server {
 		n = defaultMaxConcurrent
 	}
 	s.sem = make(chan struct{}, n)
-	perHour, burst, daily := cfg.RatePerHour, cfg.RateBurst, cfg.DailyIngestBytes
-	if perHour <= 0 {
-		perHour = defaultRatePerHour
-	}
-	if burst <= 0 {
-		burst = defaultRateBurst
-	}
-	if daily <= 0 {
-		daily = defaultDailyIngestBytes
-	}
-	s.rate = newIPLimiter(perHour, burst)
-	s.ingest = &dailyCap{max: daily}
 
 	if rules, err := buildRules(cfg.Options); err != nil {
 		s.logf("error: building rule methodology: %v", err)

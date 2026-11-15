@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -60,11 +59,7 @@ type serveFlags struct {
 	setupTemplate bool
 	readyTimeout  time.Duration
 
-	ratePerHour  int
-	rateBurst    int
-	dailyIngest  string
-	trustedProxy []string
-	hsts         bool
+	hsts bool
 }
 
 // serveEnv maps flag names to the env vars they default from.
@@ -75,10 +70,6 @@ var serveEnv = []struct{ flag, env string }{
 	{"sweep-age", "VERN_SWEEP_AGE"},
 	{"sweep-every", "VERN_SWEEP_EVERY"},
 	{"setup-template", "VERN_SETUP_TEMPLATE"},
-	{"rate-per-hour", "VERN_RATE_PER_HOUR"},
-	{"rate-burst", "VERN_RATE_BURST"},
-	{"daily-ingest", "VERN_DAILY_INGEST"},
-	{"trusted-proxy", "VERN_TRUSTED_PROXIES"},
 	{"hsts", "VERN_HSTS"},
 }
 
@@ -89,10 +80,6 @@ func (o *serveFlags) register(f *pflag.FlagSet) {
 	f.DurationVar(&o.sweepAge, "sweep-age", 10*time.Minute, "the janitor deletes leftover runs older than this; at least --run-timeout + 1m (env VERN_SWEEP_AGE)")
 	f.DurationVar(&o.sweepEvery, "sweep-every", 5*time.Minute, "how often the janitor sweeps (env VERN_SWEEP_EVERY)")
 	f.BoolVar(&o.setupTemplate, "setup-template", false, "create the metrics-otel@custom component template if absent; cluster-wide, so only for single-node or ephemeral clusters (env VERN_SETUP_TEMPLATE)")
-	f.IntVar(&o.ratePerHour, "rate-per-hour", 6, "score runs per client IP per hour (env VERN_RATE_PER_HOUR)")
-	f.IntVar(&o.rateBurst, "rate-burst", 3, "runs a client IP may make back to back before the hourly rate applies (env VERN_RATE_BURST)")
-	f.StringVar(&o.dailyIngest, "daily-ingest", "2GB", "decompressed upload bytes accepted per UTC day across all clients, e.g. 500MB or 2GB; the upload that crosses it finishes, later ones get 429 until midnight UTC (env VERN_DAILY_INGEST)")
-	f.StringSliceVar(&o.trustedProxy, "trusted-proxy", nil, "CIDR of a reverse proxy whose X-Forwarded-For is believed, repeatable or comma-separated; with none the header is ignored (env VERN_TRUSTED_PROXIES)")
 	f.BoolVar(&o.hsts, "hsts", false, "send Strict-Transport-Security; only behind HTTPS (env VERN_HSTS)")
 	f.DurationVar(&o.readyTimeout, "ready-timeout", 90*time.Second, "how long one bootstrap attempt waits for Elasticsearch to answer; serve keeps retrying in the background")
 }
@@ -136,61 +123,7 @@ func (o *serveFlags) validate() []error {
 	if o.readyTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("--ready-timeout must be positive, got %s", o.readyTimeout))
 	}
-	if o.ratePerHour < 1 {
-		errs = append(errs, fmt.Errorf("--rate-per-hour must be at least 1, got %d", o.ratePerHour))
-	}
-	if o.rateBurst < 1 {
-		errs = append(errs, fmt.Errorf("--rate-burst must be at least 1, got %d", o.rateBurst))
-	}
-	if _, err := parseBytes(o.dailyIngest); err != nil {
-		errs = append(errs, fmt.Errorf("--daily-ingest: %w", err))
-	}
-	if _, err := parsePrefixes(o.trustedProxy); err != nil {
-		errs = append(errs, fmt.Errorf("--trusted-proxy: %w", err))
-	}
 	return errs
-}
-
-// parseBytes reads a byte count with an optional KB/MB/GB suffix (powers of
-// 1024, case-insensitive; no suffix means bytes).
-func parseBytes(s string) (int64, error) {
-	t := strings.ToUpper(strings.TrimSpace(s))
-	mult := int64(1)
-	for _, u := range []struct {
-		suffix string
-		mult   int64
-	}{{"GB", 1 << 30}, {"MB", 1 << 20}, {"KB", 1 << 10}, {"B", 1}} {
-		if strings.HasSuffix(t, u.suffix) {
-			t, mult = strings.TrimSpace(strings.TrimSuffix(t, u.suffix)), u.mult
-			break
-		}
-	}
-	n, err := strconv.ParseInt(t, 10, 64)
-	if err != nil || n < 1 || n > (1<<62)/mult {
-		return 0, fmt.Errorf("%q is not a positive size such as 500MB or 2GB", s)
-	}
-	return n * mult, nil
-}
-
-// parsePrefixes parses CIDRs; a bare address is its own /32 or /128.
-func parsePrefixes(in []string) ([]netip.Prefix, error) {
-	var out []netip.Prefix
-	for _, s := range in {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		p, err := netip.ParsePrefix(s)
-		if err != nil {
-			a, aerr := netip.ParseAddr(s)
-			if aerr != nil {
-				return nil, fmt.Errorf("%q is not a CIDR or IP address", s)
-			}
-			p = netip.PrefixFrom(a, a.BitLen())
-		}
-		out = append(out, p.Masked())
-	}
-	return out, nil
 }
 
 var serveOpts serveFlags
@@ -292,9 +225,6 @@ func serve(ctx context.Context, o serveFlags, creds esCredentials, cfg *config.C
 			ReadyTimeout:   o.readyTimeout,
 		})
 	}
-	// Both were validated by resolve; the zero values would pick defaults.
-	dailyIngest, _ := parseBytes(o.dailyIngest)
-	trusted, _ := parsePrefixes(o.trustedProxy)
 	handler := server.New(server.Config{
 		Engine:        eng,
 		Score:         h.score,
@@ -302,14 +232,9 @@ func serve(ctx context.Context, o serveFlags, creds esCredentials, cfg *config.C
 		MaxConcurrent: o.maxConcurrent,
 		RunTimeout:    o.runTimeout,
 		Static:        web.FS(),
-
-		RatePerHour:      o.ratePerHour,
-		RateBurst:        o.rateBurst,
-		DailyIngestBytes: dailyIngest,
-		TrustedProxies:   trusted,
-		HSTS:             o.hsts,
-		Version:          version,
-		Logf:             logf,
+		HSTS:          o.hsts,
+		Version:       version,
+		Logf:          logf,
 	})
 
 	ln, err := net.Listen("tcp", o.listen)

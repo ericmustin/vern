@@ -545,7 +545,7 @@ func TestRuns_ErrorBodiesCarryNoEngineText(t *testing.T) {
 
 func TestRuns_UploadErrorsAreFixedMessages(t *testing.T) {
 	const name = "customer-acme-secrets.json"
-	s := newTestServer(t, Config{Engine: &fakeEngine{}, RatePerHour: 1000, RateBurst: 1000})
+	s := newTestServer(t, Config{Engine: &fakeEngine{}})
 	bodies := map[string][]byte{
 		"unrecognized": []byte(`{"hello":"world"}`),
 		"truncated":    []byte(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"upload-secret-value"`),

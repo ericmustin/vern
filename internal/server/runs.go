@@ -6,12 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"mime"
 	"net/http"
 	"path"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,19 +30,6 @@ var (
 
 // handleRuns scores one uploaded sample synchronously and returns the report.
 func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	// Limits are checked before the run slot is taken, so a limited client
-	// never occupies it.
-	now := s.now()
-	if ok, wait := s.rate.allow(clientIP(r, s.cfg.TrustedProxies), now); !ok {
-		retryAfter(w, wait)
-		writeError(w, http.StatusTooManyRequests, "rate limit reached; try again later")
-		return
-	}
-	if full, reset := s.ingest.full(now); full {
-		retryAfter(w, reset)
-		writeError(w, http.StatusTooManyRequests, "daily capacity reached")
-		return
-	}
 	select {
 	case s.sem <- struct{}{}:
 	default:
@@ -71,7 +56,6 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		s.failUpload(w, r, ri, err)
 		return
 	}
-	s.ingest.add(s.now(), sample.DecompressedBytes)
 	// WriteTimeout started when the headers were read; the upload, decode
 	// and Ready below may have eaten into it, so give the response a fresh
 	// window covering the whole run.
@@ -80,11 +64,6 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		s.logf("run: extending write deadline: %v", err)
 	}
 	s.scoreSample(w, r, ri, sample, names)
-}
-
-// retryAfter sets Retry-After to d rounded up to whole seconds (at least 1).
-func retryAfter(w http.ResponseWriter, d time.Duration) {
-	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(d.Seconds())))))
 }
 
 func isMultipart(r *http.Request) bool {
