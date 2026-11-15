@@ -42,7 +42,7 @@ STUB
   cat >"$T/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >>"$STUB_DIR/docker.log"
-echo "DOCKER_CONFIG=${DOCKER_CONFIG-<unset>}" >>"$STUB_DIR/docker.env"
+echo "$1 DOCKER_CONFIG=${DOCKER_CONFIG-<unset>}" >>"$STUB_DIR/docker.env"
 [ "$1" != login ] || cat >"$STUB_DIR/docker.stdin"
 exit 0
 STUB
@@ -134,9 +134,14 @@ grep -q "^push us-central1-docker.pkg.dev/my-project/vern/vern:" "$T/docker.log"
 [ "$(cat "$T/docker.stdin")" = stub-token ] || fail "token not piped to docker login"
 if grep -q "configure-docker" "$T/gcloud.log" "$T/docker.log"; then fail "configure-docker was used"; fi
 if [ -d "$T/home/.docker" ]; then fail "global docker config was created"; fi
-dc=$(sed 's/^DOCKER_CONFIG=//' "$T/docker.env" | sort -u)
-[ "$(echo "$dc" | wc -l)" -eq 1 ] || fail "DOCKER_CONFIG varied between calls"
-case "$dc" in "<unset>"|"$T/home/.docker"|"") fail "DOCKER_CONFIG not a temp dir: $dc" ;; esac
+bdc=$(sed -n 's/^build DOCKER_CONFIG=//p' "$T/docker.env")
+[ -n "$bdc" ] || fail "no build invocation recorded"
+[ "$bdc" = "<unset>" ] || fail "build ran with DOCKER_CONFIG=$bdc, want the normal config"
+ldc=$(sed -n 's/^login DOCKER_CONFIG=//p' "$T/docker.env")
+pdc=$(sed -n 's/^push DOCKER_CONFIG=//p' "$T/docker.env")
+case "$ldc" in "<unset>"|"$T/home/.docker"|"") fail "login DOCKER_CONFIG not a temp dir: $ldc" ;; esac
+[ "$ldc" = "$pdc" ] || fail "login ($ldc) and push ($pdc) used different configs"
+dc=$ldc
 [ ! -e "$dc" ] || fail "temp DOCKER_CONFIG not removed"
 
 # --delete without --yes deletes nothing.

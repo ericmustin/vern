@@ -91,17 +91,17 @@ if [ -z "${IMAGE:-}" ]; then
   TAG=$(git -C "$ROOT" rev-parse --short=12 HEAD)
   if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then TAG="$TAG-dirty"; fi
   IMAGE="$REGISTRY/$GCP_PROJECT/$REPO/vern:$TAG"
-  # A throwaway docker config with a short-lived token: the global docker
-  # config is never touched.
-  DOCKER_CONFIG=$(mktemp -d)
-  export DOCKER_CONFIG
-  trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+  # Build with the normal docker config: a fresh DOCKER_CONFIG would lose
+  # the CLI plugins (buildx) that the Dockerfile needs.
   docker build --platform linux/amd64 --target runtime --build-arg "VERSION=$TAG" -t "$IMAGE" "$ROOT"
-  g auth print-access-token | docker login -u oauth2accesstoken --password-stdin "$REGISTRY"
-  docker push "$IMAGE"
-  rm -rf "$DOCKER_CONFIG"
+  # Only login and push use a throwaway config with a short-lived token, so
+  # the global docker config is never touched.
+  DOCKER_TMP=$(mktemp -d)
+  trap 'rm -rf "$DOCKER_TMP"' EXIT
+  g auth print-access-token | DOCKER_CONFIG="$DOCKER_TMP" docker login -u oauth2accesstoken --password-stdin "$REGISTRY"
+  DOCKER_CONFIG="$DOCKER_TMP" docker push "$IMAGE"
+  rm -rf "$DOCKER_TMP"
   trap - EXIT
-  unset DOCKER_CONFIG
 fi
 
 # 4. Render the service and deploy it.
