@@ -46,6 +46,7 @@ STUB
 echo "$*" >>"$STUB_DIR/docker.log"
 echo "$1 DOCKER_CONFIG=${DOCKER_CONFIG-<unset>}" >>"$STUB_DIR/docker.env"
 [ "$1" != login ] || cat >"$STUB_DIR/docker.stdin"
+[ "$1" != push ] || [ -z "${STUB_PUSH_FAIL:-}" ] || exit 1
 exit 0
 STUB
   chmod +x "$T/bin/gcloud" "$T/bin/docker"
@@ -148,6 +149,17 @@ case "$ldc" in "<unset>"|"$T/home/.docker"|"") fail "login DOCKER_CONFIG not a t
 [ "$ldc" = "$pdc" ] || fail "login ($ldc) and push ($pdc) used different configs"
 dc=$ldc
 [ ! -e "$dc" ] || fail "temp DOCKER_CONFIG not removed"
+[ "$(grep -n '' "$T/docker.log" | sed -n 's/^\([0-9]*\):logout .*/\1/p')" -gt "$(grep -n '' "$T/docker.log" | sed -n 's/^\([0-9]*\):push .*/\1/p')" ] || fail "logout did not follow push"
+grep -q "^logout us-central1-docker.pkg.dev$" "$T/docker.log" || fail "logout args"
+[ "$(sed -n 's/^logout DOCKER_CONFIG=//p' "$T/docker.env")" = "$dc" ] || fail "logout did not use the temp DOCKER_CONFIG"
+
+# A failed push still logs out and removes the temp dir.
+new_sandbox
+run_script "${BASE[@]}" STUB_PUSH_FAIL=1 --
+[ "$RC" -ne 0 ] || fail "failed push exited 0"
+grep -q "^logout us-central1-docker.pkg.dev$" "$T/docker.log" || fail "no logout after a failed push"
+fdc=$(sed -n 's/^logout DOCKER_CONFIG=//p' "$T/docker.env")
+[ -n "$fdc" ] && [ ! -e "$fdc" ] || fail "temp DOCKER_CONFIG not removed after a failed push"
 
 # --delete without --yes deletes nothing.
 new_sandbox

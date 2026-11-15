@@ -108,12 +108,18 @@ if [ -z "${IMAGE:-}" ]; then
   # the CLI plugins (buildx) that the Dockerfile needs.
   docker build --platform linux/amd64 --target runtime --build-arg "VERSION=$TAG" -t "$IMAGE" "$ROOT"
   # Only login and push use a throwaway config with a short-lived token, so
-  # the global docker config is never touched.
+  # the global config.json is untouched. An OS credential store (such as the
+  # macOS keychain) ignores DOCKER_CONFIG, so the logout removes the
+  # credential from there too, on success and on failure.
   DOCKER_TMP=$(mktemp -d)
-  trap 'rm -rf "$DOCKER_TMP"' EXIT
+  docker_cleanup() {
+    DOCKER_CONFIG="$DOCKER_TMP" docker logout "$REGISTRY" >/dev/null 2>&1 || true
+    rm -rf "$DOCKER_TMP"
+  }
+  trap docker_cleanup EXIT
   g auth print-access-token | DOCKER_CONFIG="$DOCKER_TMP" docker login -u oauth2accesstoken --password-stdin "$REGISTRY"
   DOCKER_CONFIG="$DOCKER_TMP" docker push "$IMAGE"
-  rm -rf "$DOCKER_TMP"
+  docker_cleanup
   trap - EXIT
 fi
 
