@@ -339,7 +339,9 @@ func TestLoad_SplitsHugeMetricQuickly(t *testing.T) {
 	if _, err := e.Load(t.Context(), newRunID(t, time.Now()), s); err != nil {
 		t.Fatal(err)
 	}
-	if d := time.Since(start); d > time.Second {
+	// A quadratic split takes minutes here; the generous bound keeps shared
+	// CI runners under -race from failing a linear run.
+	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("took %v", d)
 	}
 	gauges, sums := 0, 0
