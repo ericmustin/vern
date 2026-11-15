@@ -23,9 +23,12 @@ case "$*" in
     [ -n "${STUB_NO_BILLING:-}" ] || echo "billingAccounts/AAAA-BBBB-CCCC" ;;
   "billing budgets list"*)
     [ -z "${STUB_BUDGET_EXISTS:-}" ] || echo "billingAccounts/AAAA-BBBB-CCCC/budgets/b1" ;;
+  "artifacts repositories delete"*)
+    [ -z "${STUB_NOTFOUND:-}" ] || { echo "ERROR: (gcloud.artifacts.repositories.delete) NOT_FOUND: Requested entity was not found." >&2; exit 1; } ;;
   "artifacts repositories describe"*)
     [ -n "${STUB_REPO_EXISTS:-}" ] || exit 1 ;;
   "run services delete"*)
+    [ -z "${STUB_NOTFOUND:-}" ] || { echo "ERROR: (gcloud.run.services.delete) Service [vern-spike] could not be found." >&2; exit 1; }
     [ -z "${STUB_DELETE_ERR:-}" ] || { echo "$STUB_DELETE_ERR" >&2; exit 1; } ;;
   "run services replace"*)
     cp "$4" "$STUB_DIR/rendered.yaml" ;;
@@ -162,7 +165,7 @@ grep -q "PERMISSION_DENIED" "$T/stderr" || fail "delete error not surfaced"
 
 # A not-found delete is tolerated.
 new_sandbox
-run_script "${BASE[@]}" STUB_DELETE_ERR="ERROR: NOT_FOUND: service not found" -- --delete --yes
+run_script "${BASE[@]}" STUB_NOTFOUND=1 -- --delete --yes
 [ "$RC" -eq 0 ] || { cat "$T/stderr"; fail "not-found delete exited $RC"; }
 grep -q "^artifacts repositories delete" "$T/gcloud.log" || fail "repository delete skipped after not-found service"
 

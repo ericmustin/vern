@@ -55,7 +55,7 @@ delete_or_absent() {
   local out
   if ! out=$(g "$@" 2>&1); then
     case "$out" in
-      *NOT_FOUND*|*"not found"*|*"Not found"*) echo "already gone: $1 $2" ;;
+      *NOT_FOUND*|*"not found"*|*"Not found"*|*"could not be found"*) echo "already gone: $1 $2" ;;
       *) echo "$out" >&2; die "gcloud $1 $2 $3 failed" ;;
     esac
   else
