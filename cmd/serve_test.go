@@ -358,12 +358,16 @@ func (f *flakyEngine) Ready(context.Context) error {
 func TestWaitReady_RetriesUntilReady(t *testing.T) {
 	eng := &flakyEngine{failures: 1}
 	logs := &syncBuffer{}
+	var ready atomic.Bool
 	done := make(chan struct{})
-	go func() { waitReady(context.Background(), eng, logs.logf); close(done) }()
+	go func() { waitReady(context.Background(), eng, logs.logf, &ready); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("waitReady did not return once the engine became ready")
+	}
+	if !ready.Load() {
+		t.Fatal("ready flag not set after Ready succeeded")
 	}
 	if eng.calls != 2 || !strings.Contains(logs.String(), "elasticsearch is ready") {
 		t.Fatalf("calls = %d, logs:\n%s", eng.calls, logs.String())
@@ -372,15 +376,19 @@ func TestWaitReady_RetriesUntilReady(t *testing.T) {
 
 func TestWaitReady_StopsOnCancel(t *testing.T) {
 	eng := &flakyEngine{failures: 1 << 30}
+	var ready atomic.Bool
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { waitReady(ctx, eng, func(string, ...any) {}); close(done) }()
+	go func() { waitReady(ctx, eng, func(string, ...any) {}, &ready); close(done) }()
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("waitReady did not stop on cancel")
+	}
+	if ready.Load() {
+		t.Fatal("ready flag set though the engine never answered")
 	}
 }
 

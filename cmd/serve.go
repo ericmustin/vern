@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -225,8 +226,10 @@ func serve(ctx context.Context, o serveFlags, creds esCredentials, cfg *config.C
 			ReadyTimeout:   o.readyTimeout,
 		})
 	}
+	var ready atomic.Bool
 	handler := server.New(server.Config{
 		Engine:        eng,
+		Ready:         ready.Load,
 		Score:         h.score,
 		Options:       samplescore.Options{Config: cfg, Logf: logf},
 		MaxConcurrent: o.maxConcurrent,
@@ -261,7 +264,7 @@ func serve(ctx context.Context, o serveFlags, creds esCredentials, cfg *config.C
 	bgCtx, bgCancel := context.WithCancel(ctx)
 	defer bgCancel()
 	var wg sync.WaitGroup
-	wg.Go(func() { waitReady(bgCtx, eng, logf) })
+	wg.Go(func() { waitReady(bgCtx, eng, logf, &ready) })
 	wg.Go(func() { server.RunJanitor(bgCtx, eng, o.sweepAge, o.sweepEvery, logf) })
 
 	serveErr := make(chan error, 1)
@@ -294,12 +297,13 @@ func serve(ctx context.Context, o serveFlags, creds esCredentials, cfg *config.C
 
 // waitReady bootstraps the engine in the background, retrying with backoff
 // until it succeeds or ctx is done, so /readyz turns 200 once Elasticsearch
-// is up, without a restart.
-func waitReady(ctx context.Context, eng engine.Engine, logf func(string, ...any)) {
+// is up, without a restart. It sets ready once the engine answers.
+func waitReady(ctx context.Context, eng engine.Engine, logf func(string, ...any), ready *atomic.Bool) {
 	backoff := serveReadyBackoffStart
 	for {
 		err := eng.Ready(ctx)
 		if err == nil {
+			ready.Store(true)
 			logf("elasticsearch is ready")
 			return
 		}

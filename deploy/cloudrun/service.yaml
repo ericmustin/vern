@@ -1,0 +1,73 @@
+# Cloud Run service: vern serve with Elasticsearch as a sidecar on loopback.
+# deploy.sh fills in ${SERVICE} and ${IMAGE}. Elasticsearch listens on
+# 127.0.0.1 only, so security is off and there are no secrets; its data lives
+# in the instance's in-memory filesystem and is gone when the instance stops.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ${SERVICE}
+  annotations:
+    run.googleapis.com/ingress: all
+    # Service-level default is 10; one instance keeps cost bounded.
+    run.googleapis.com/maxScale: "1"
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        # CPU stays allocated so Elasticsearch and the janitor keep running
+        # between requests; the instance still scales to zero when idle.
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/startup-cpu-boost: "true"
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "1"
+    spec:
+      containerConcurrency: 20
+      timeoutSeconds: 300
+      containers:
+        - name: vern
+          image: ${IMAGE}
+          args: ["serve"]
+          ports:
+            - name: http1
+              containerPort: 8080
+          env:
+            - name: VERN_ELASTICSEARCH_URL
+              value: http://127.0.0.1:9200
+            - name: VERN_SETUP_TEMPLATE
+              value: "true"
+            - name: VERN_HSTS
+              value: "true"
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 30
+        # Cloud Run pulls only from Artifact Registry and Docker Hub, so this
+        # is the Docker Hub copy of the official image.
+        - name: elasticsearch
+          image: docker.io/library/elasticsearch:9.5.5
+          env:
+            - name: discovery.type
+              value: single-node
+            - name: network.host
+              value: 127.0.0.1
+            - name: node.store.allow_mmap
+              value: "false"
+            - name: xpack.security.enabled
+              value: "false"
+            - name: xpack.ml.enabled
+              value: "false"
+            - name: ingest.geoip.downloader.enabled
+              value: "false"
+            - name: ES_JAVA_OPTS
+              value: -Xms1g -Xmx1g
+          resources:
+            limits:
+              cpu: "1"
+              memory: 3Gi

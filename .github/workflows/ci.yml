@@ -40,7 +40,8 @@ jobs:
       - name: Test and lint CI scripts
         run: |
           bash ci/test/vern-ci-test.sh
-          shellcheck ci/*.sh ci/test/*.sh
+          bash ci/test/cloudrun-deploy-test.sh
+          shellcheck ci/*.sh ci/test/*.sh deploy/cloudrun/*.sh
 
       - name: Run Vern review
         run: go run . review

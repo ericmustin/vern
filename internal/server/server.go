@@ -30,6 +30,10 @@ type ScoreFunc func(ctx context.Context, eng engine.Engine, s *otlpin.Sample, op
 type Config struct {
 	Engine engine.Engine
 	Score  ScoreFunc // nil -> samplescore.Score
+	// Ready reports whether the engine's bootstrap has finished. Until it
+	// does, /readyz answers 503 without probing and uploads get 503 "warming
+	// up". nil means always ready.
+	Ready func() bool
 	// Options is the template for every run; Files and Sweep are overwritten
 	// per run (Sweep = 0: RunJanitor owns sweeping).
 	Options       samplescore.Options
@@ -138,9 +142,16 @@ func (s *server) handleRules(w http.ResponseWriter, r *http.Request) {
 	w.Write(s.rules)
 }
 
+// bootstrapped reports whether the engine bootstrap has finished.
+func (s *server) bootstrapped() bool { return s.cfg.Ready == nil || s.cfg.Ready() }
+
 // handleReady answers from a result cached for readyCacheTTL, so probes
 // cannot hammer the engine. The engine error is logged, never returned.
 func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if !s.bootstrapped() {
+		writeText(w, http.StatusServiceUnavailable, "not ready")
+		return
+	}
 	s.readyMu.Lock()
 	fresh := !s.readyAt.IsZero() && s.now().Sub(s.readyAt) < readyCacheTTL
 	err := s.readyErr

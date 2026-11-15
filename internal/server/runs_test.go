@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -687,5 +688,36 @@ func TestRuns_BusyFieldDiscoveryAbortsWholeRun(t *testing.T) {
 	}
 	if eng.purgeCount() != 1 {
 		t.Fatalf("Purge called %d times, want 1", eng.purgeCount())
+	}
+}
+
+// While the engine bootstraps, an upload gets 503 "warming up" with
+// Retry-After, and neither takes the run slot nor touches the engine.
+func TestRuns_WarmingUp503(t *testing.T) {
+	var ready atomic.Bool
+	eng := &fakeEngine{}
+	s := newTestServer(t, Config{Engine: eng, Ready: ready.Load})
+
+	rec := serve(s, postRaw(readDemo(t)))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "15" {
+		t.Fatalf("warming-up run = %d Retry-After %q, want 503 and 15", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if msg := errorBody(t, rec); msg != "warming up, try again shortly" {
+		t.Fatalf("error = %q", msg)
+	}
+	if eng.readyCalls != 0 || len(s.sem) != 0 {
+		t.Fatalf("engine probed %d times, %d slots held; want 0 and 0", eng.readyCalls, len(s.sem))
+	}
+
+	// /readyz answers 503 at once, without probing.
+	rec = serve(s, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable || eng.readyCalls != 0 {
+		t.Fatalf("/readyz = %d after %d probes, want 503 and 0", rec.Code, eng.readyCalls)
+	}
+
+	ready.Store(true)
+	decodeRun(t, serve(s, postRaw(readDemo(t))))
+	if rec := serve(s, httptest.NewRequest(http.MethodGet, "/readyz", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("/readyz after bootstrap = %d, want 200", rec.Code)
 	}
 }

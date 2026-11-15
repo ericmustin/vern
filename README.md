@@ -35,6 +35,8 @@ advisory rules are shown but not scored.
   where you drop OTLP files to score them, with the same scoring as an HTTP API
   (`POST /api/v1/runs`). Nothing is stored. It scores one upload at a time by
   default; see [limits and settings](deploy/README.md#local-ui-and-api).
+- To host `vern serve` publicly, on Cloud Run or any VM, see
+  [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## Score a sample in CI
 

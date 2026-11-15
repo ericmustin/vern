@@ -30,6 +30,12 @@ var (
 
 // handleRuns scores one uploaded sample synchronously and returns the report.
 func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	// While the engine bootstraps, touch neither the slot nor the engine.
+	if !s.bootstrapped() {
+		w.Header().Set("Retry-After", "15")
+		writeError(w, http.StatusServiceUnavailable, "warming up, try again shortly")
+		return
+	}
 	select {
 	case s.sem <- struct{}{}:
 	default:

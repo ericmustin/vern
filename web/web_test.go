@@ -262,3 +262,48 @@ func TestAppRendersBlindSpotsAsText(t *testing.T) {
 		}
 	}
 }
+
+// TestAppPollsReadyzForWarmup: while the hosted engine starts, the page polls
+// /readyz and shows the warming-up text through textContent (setStatus), and
+// a 503 that says "warming up" is not shown as "busy".
+func TestAppPollsReadyzForWarmup(t *testing.T) {
+	src := readAll(t, ".js")["app.js"]
+	for _, want := range []string{
+		"'/readyz'",
+		"Starting the scorer. After an idle period this takes about a minute.",
+		"The scorer did not start. Reload the page to try again.",
+		"WARMING_POLL_MS = 3000",
+		"3 * 60 * 1000",
+		"setStatus(WARMING_TEXT, true)",
+		"warming up",
+		"checkReady();",
+		"s.textContent = text || ''",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+}
+
+// TestApp413DoesNotRequireJSON: Cloud Run's front end answers an oversized
+// upload with 413 and an HTML body, so the 413 branch must work without a
+// JSON error body.
+func TestApp413DoesNotRequireJSON(t *testing.T) {
+	src := readAll(t, ".js")["app.js"]
+	i := strings.Index(src, "async function serverMessage(res)")
+	if i < 0 {
+		t.Fatal("app.js has no serverMessage")
+	}
+	fn := src[i : i+strings.Index(src[i:], "\n  }\n")]
+	if !strings.Contains(fn, "catch (e)") || !strings.Contains(fn, "return ''") {
+		t.Errorf("serverMessage must tolerate a non-JSON body:\n%s", fn)
+	}
+	j := strings.Index(src, "case 413:")
+	if j < 0 {
+		t.Fatal("app.js has no 413 branch")
+	}
+	branch := src[j : j+strings.Index(src[j:], "break;")]
+	if !strings.Contains(branch, "msg ?") || !strings.Contains(branch, "LIMITS_TEXT") {
+		t.Errorf("413 branch must fall back to the limits text when msg is empty:\n%s", branch)
+	}
+}

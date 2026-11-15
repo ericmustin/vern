@@ -11,6 +11,11 @@
   var EXAMPLE_NAME = 'demo.jsonl.gz';
   var SCORING_TEXT = 'Scoring: loading, evaluating, deleting…';
   var LIMITS_URL = '/api/v1/limits';
+  var READY_URL = '/readyz';
+  var WARMING_TEXT = 'Starting the scorer. After an idle period this takes about a minute.';
+  var WARMING_FAILED_TEXT = 'The scorer did not start. Reload the page to try again.';
+  var WARMING_POLL_MS = 3000;
+  var WARMING_GIVE_UP_MS = 3 * 60 * 1000;
   // Replaced from LIMITS_URL when the page loads; this text stays if that fails.
   var LIMITS_TEXT = 'Uploads are limited to 30 MB compressed, 200 MB decompressed and 500,000 items.';
 
@@ -40,7 +45,7 @@
   var numberFmt = new Intl.NumberFormat('en-US');
   var extentFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
 
-  var state = { report: null, service: '', busy: false };
+  var state = { report: null, service: '', busy: false, warming: false };
 
   function $(id) {
     return document.getElementById(id);
@@ -108,10 +113,55 @@
 
   function setBusy(busy) {
     state.busy = busy;
-    $('pick').disabled = busy;
-    $('example').disabled = busy;
+    $('pick').disabled = busy || state.warming;
+    $('example').disabled = busy || state.warming;
     $('dropzone').classList.toggle('is-busy', busy);
     $('dropzone').setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
+  // ---- Warm-up ----
+
+  // The hosted scorer scales to zero, so after an idle period its engine needs
+  // about a minute. Until /readyz answers 200 the controls stay disabled.
+  async function isReady() {
+    try {
+      var res = await fetch(READY_URL, { cache: 'no-store' });
+      return res.status === 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setWarming(warming) {
+    state.warming = warming;
+    $('pick').disabled = warming || state.busy;
+    $('example').disabled = warming || state.busy;
+  }
+
+  // Disables the controls and polls /readyz until it answers 200, or gives up.
+  function startWarmup() {
+    if (state.warming) return;
+    setWarming(true);
+    setStatus(WARMING_TEXT, true);
+    var deadline = Date.now() + WARMING_GIVE_UP_MS;
+    async function poll() {
+      if (await isReady()) {
+        setWarming(false);
+        setStatus('');
+        return;
+      }
+      if (Date.now() >= deadline) {
+        setStatus('');
+        showError(WARMING_FAILED_TEXT);
+        return;
+      }
+      setTimeout(poll, WARMING_POLL_MS);
+    }
+    setTimeout(poll, WARMING_POLL_MS);
+  }
+
+  async function checkReady() {
+    if (!(await isReady())) startWarmup();
   }
 
   async function serverMessage(res) {
@@ -136,8 +186,16 @@
       case 413:
         showError('That upload is too large.', (msg ? msg + '. ' : '') + LIMITS_TEXT);
         break;
-      case 429:
       case 503:
+        if (/^warming up/i.test(msg)) {
+          // Not "busy": the engine is still starting. Show the server's words.
+          showError(msg.charAt(0).toUpperCase() + msg.slice(1) + '.', WARMING_TEXT);
+          startWarmup();
+          break;
+        }
+        showError(retryText(res), msg);
+        break;
+      case 429:
         showError(retryText(res), msg);
         break;
       case 504:
@@ -155,7 +213,7 @@
 
   // items: [{ blob, name }]
   async function score(items) {
-    if (state.busy || items.length === 0) return;
+    if (state.busy || state.warming || items.length === 0) return;
     var form = new FormData();
     items.forEach(function (it) {
       form.append('files', it.blob, it.name);
@@ -204,7 +262,7 @@
   }
 
   async function scoreExample() {
-    if (state.busy) return;
+    if (state.busy || state.warming) return;
     clearError();
     setBusy(true);
     setStatus('Fetching the example data…', true);
@@ -252,7 +310,7 @@
     zone.addEventListener('dragover', function (ev) {
       if (!hasFiles(ev)) return;
       ev.preventDefault();
-      ev.dataTransfer.dropEffect = state.busy ? 'none' : 'copy';
+      ev.dataTransfer.dropEffect = (state.busy || state.warming) ? 'none' : 'copy';
     });
     zone.addEventListener('dragleave', function () {
       depth = Math.max(0, depth - 1);
@@ -741,6 +799,7 @@
 
   function init() {
     loadLimits();
+    checkReady();
     wireUpload();
     wireDownloads();
     $('service').addEventListener('change', function (ev) {
