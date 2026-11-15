@@ -150,6 +150,23 @@ func startServe(t *testing.T, ctx context.Context, o serveFlags, creds esCredent
 	return "", nil
 }
 
+// waitServeReady blocks until /readyz answers 200: the bootstrap runs after
+// serve starts listening, and until it finishes uploads get 503.
+func waitServeReady(t *testing.T, addr string, logs *syncBuffer) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if resp, err := http.Get("http://" + addr + "/readyz"); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("serve never became ready; logs:\n%s", logs.String())
+}
+
 func testServeFlags() serveFlags {
 	return serveFlags{listen: "127.0.0.1:0", maxConcurrent: 2, runTimeout: 5 * time.Second, sweepAge: 10 * time.Minute, sweepEvery: time.Hour, readyTimeout: 200 * time.Millisecond}
 }
@@ -270,6 +287,7 @@ func TestServe_ShutdownWaitsForInFlight(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, done := startServe(t, ctx, testServeFlags(), esCredentials{URL: "http://" + closedPort(t)}, logs, serveHooks{engine: eng})
+	waitServeReady(t, addr, logs)
 
 	type result struct {
 		status int

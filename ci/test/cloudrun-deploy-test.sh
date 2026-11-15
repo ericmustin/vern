@@ -25,6 +25,8 @@ case "$*" in
     [ -z "${STUB_BUDGET_EXISTS:-}" ] || echo "billingAccounts/AAAA-BBBB-CCCC/budgets/b1" ;;
   "artifacts repositories describe"*)
     [ -n "${STUB_REPO_EXISTS:-}" ] || exit 1 ;;
+  "run services delete"*)
+    [ -z "${STUB_DELETE_ERR:-}" ] || { echo "$STUB_DELETE_ERR" >&2; exit 1; } ;;
   "run services replace"*)
     cp "$4" "$STUB_DIR/rendered.yaml" ;;
   "run services describe"*)
@@ -150,5 +152,24 @@ grep -q "^billing budgets delete billingAccounts/AAAA-BBBB-CCCC/budgets/b1" "$T/
 while IFS= read -r line; do
   case "$line" in *" --configuration=test-config"*" --project=my-project") ;; *) fail "delete call lacks both flags: $line" ;; esac
 done <"$T/gcloud.log"
+
+# A delete that fails for another reason is an error, not "Deleted".
+new_sandbox
+run_script "${BASE[@]}" STUB_DELETE_ERR="ERROR: (gcloud.run.services.delete) PERMISSION_DENIED: denied" -- --delete --yes
+[ "$RC" -ne 0 ] || fail "permission-denied delete exited 0"
+if grep -q "Deleted" "$T/stdout"; then fail "printed Deleted after a failed delete"; fi
+grep -q "PERMISSION_DENIED" "$T/stderr" || fail "delete error not surfaced"
+
+# A not-found delete is tolerated.
+new_sandbox
+run_script "${BASE[@]}" STUB_DELETE_ERR="ERROR: NOT_FOUND: service not found" -- --delete --yes
+[ "$RC" -eq 0 ] || { cat "$T/stderr"; fail "not-found delete exited $RC"; }
+grep -q "^artifacts repositories delete" "$T/gcloud.log" || fail "repository delete skipped after not-found service"
+
+# No billing account: --delete --yes deletes nothing.
+new_sandbox
+run_script "${BASE[@]}" STUB_NO_BILLING=1 -- --delete --yes
+[ "$RC" -ne 0 ] || fail "--delete without billing account exited 0"
+if grep -q " delete " "$T/gcloud.log"; then fail "deleted something without a billing account"; fi
 
 echo "cloudrun-deploy-test: all passed"

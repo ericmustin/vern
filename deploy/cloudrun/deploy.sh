@@ -49,11 +49,26 @@ budget_names() {
   g billing budgets list --billing-account="$1" --filter="displayName=$BUDGET_NAME" --format='value(name)'
 }
 
+# delete_or_absent runs a gcloud delete and tolerates only "not found"; any
+# other failure (permissions, network) stops the script.
+delete_or_absent() {
+  local out
+  if ! out=$(g "$@" 2>&1); then
+    case "$out" in
+      *NOT_FOUND*|*"not found"*|*"Not found"*) echo "already gone: $1 $2" ;;
+      *) echo "$out" >&2; die "gcloud $1 $2 $3 failed" ;;
+    esac
+  else
+    [ -z "$out" ] || echo "$out"
+  fi
+}
+
 if [ "$DELETE" = 1 ]; then
   [ "$YES" = 1 ] || die "--delete removes the service, the repository and the budget; pass --yes to confirm"
-  g run services delete "$SERVICE" --region "$REGION" --quiet || true
-  g artifacts repositories delete "$REPO" --location "$REGION" --quiet || true
+  # Resolve the billing account first, so a failure here deletes nothing.
   acct=$(billing_account)
+  delete_or_absent run services delete "$SERVICE" --region "$REGION" --quiet
+  delete_or_absent artifacts repositories delete "$REPO" --location "$REGION" --quiet
   for b in $(budget_names "$acct"); do
     g billing budgets delete "$b" --billing-account="$acct"
   done
