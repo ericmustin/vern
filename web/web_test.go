@@ -277,6 +277,8 @@ func TestAppPollsReadyzForWarmup(t *testing.T) {
 		"setStatus(WARMING_TEXT, true)",
 		"warming up",
 		"checkReady();",
+		"setWarming(true);\n    checkReady();", // disabled until the first /readyz reply
+		"clearError();\n        return;",       // warming banner cleared on ready
 		"s.textContent = text || ''",
 	} {
 		if !strings.Contains(src, want) {

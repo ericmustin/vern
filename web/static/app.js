@@ -148,6 +148,8 @@
       if (await isReady()) {
         setWarming(false);
         setStatus('');
+        // The "warming up" banner from a refused run no longer applies.
+        clearError();
         return;
       }
       if (Date.now() >= deadline) {
@@ -160,8 +162,15 @@
     setTimeout(poll, WARMING_POLL_MS);
   }
 
+  // The controls stay disabled (init calls setWarming(true)) until the first
+  // /readyz reply says whether the scorer is up.
   async function checkReady() {
-    if (!(await isReady())) startWarmup();
+    if (await isReady()) {
+      setWarming(false);
+      return;
+    }
+    state.warming = false;
+    startWarmup();
   }
 
   async function serverMessage(res) {
@@ -799,8 +808,9 @@
 
   function init() {
     loadLimits();
-    checkReady();
     wireUpload();
+    setWarming(true);
+    checkReady();
     wireDownloads();
     $('service').addEventListener('change', function (ev) {
       state.service = ev.target.value;

@@ -50,7 +50,8 @@ billing_account() {
 EXCLUSION="vern-$SERVICE-requests"
 exclusion_present() {
   local names
-  names=$(g logging sinks describe _Default --format='value(exclusions[].name)')
+  # Own line with || die: set -e is off inside a function called from an if.
+  names=$(g logging sinks describe _Default --format='value(exclusions[].name)') || die "could not read the _Default log sink"
   case ";$names;" in *";$EXCLUSION;"*) return 0 ;; esac
   return 1
 }
@@ -79,7 +80,9 @@ if [ "$DELETE" = 1 ]; then
   acct=$(billing_account)
   delete_or_absent run services delete "$SERVICE" --region "$REGION" --quiet
   delete_or_absent artifacts repositories delete "$REPO" --location "$REGION" --quiet
-  for b in $(budget_names "$acct"); do
+  # Own line, so a failed list stops the script (set -e is off in a for list).
+  budgets=$(budget_names "$acct")
+  for b in $budgets; do
     g billing budgets delete "$b" --billing-account="$acct"
   done
   if exclusion_present; then
@@ -123,6 +126,13 @@ if [ -z "${IMAGE:-}" ]; then
   trap - EXIT
 fi
 
+# Exclude the platform request log (client IPs) from storage, if not yet,
+# before the service exists, so a first deploy never stores client IPs.
+if ! exclusion_present; then
+  FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND log_id(\"run.googleapis.com/requests\")"
+  g logging sinks update _Default --add-exclusion="name=$EXCLUSION,filter=$FILTER"
+fi
+
 # 4. Render the service and deploy it.
 RENDERED=$(mktemp)
 trap 'rm -f "$RENDERED"' EXIT
@@ -133,15 +143,10 @@ trap - EXIT
 g run services add-iam-policy-binding "$SERVICE" --region "$REGION" \
   --member=allUsers --role=roles/run.invoker
 
-# Exclude the platform request log (client IPs) from storage, if not yet.
-if ! exclusion_present; then
-  FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND log_id(\"run.googleapis.com/requests\")"
-  g logging sinks update _Default --add-exclusion="name=$EXCLUSION,filter=$FILTER"
-fi
-
 # 5. Budget alert at 50%, 90% and 100%, if missing.
 acct=$(billing_account)
-if [ -z "$(budget_names "$acct")" ]; then
+existing=$(budget_names "$acct")
+if [ -z "$existing" ]; then
   g billing budgets create --billing-account="$acct" --display-name="$BUDGET_NAME" \
     --filter-projects="projects/$GCP_PROJECT" --budget-amount="${BUDGET_USD}USD" \
     --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0

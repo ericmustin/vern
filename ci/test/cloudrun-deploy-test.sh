@@ -22,12 +22,14 @@ case "$*" in
   "billing projects describe"*)
     [ -n "${STUB_NO_BILLING:-}" ] || echo "billingAccounts/AAAA-BBBB-CCCC" ;;
   "billing budgets list"*)
+    [ -z "${STUB_LIST_ERR:-}" ] || { echo "ERROR: PERMISSION_DENIED: budgets" >&2; exit 1; }
     [ -z "${STUB_BUDGET_EXISTS:-}" ] || echo "billingAccounts/AAAA-BBBB-CCCC/budgets/b1" ;;
   "artifacts repositories delete"*)
     [ -z "${STUB_NOTFOUND:-}" ] || { echo "ERROR: (gcloud.artifacts.repositories.delete) NOT_FOUND: Requested entity was not found." >&2; exit 1; } ;;
   "artifacts repositories describe"*)
     [ -n "${STUB_REPO_EXISTS:-}" ] || exit 1 ;;
   "logging sinks describe"*)
+    [ -z "${STUB_DESCRIBE_ERR:-}" ] || { echo "ERROR: PERMISSION_DENIED: sinks" >&2; exit 1; }
     [ -z "${STUB_EXCL_EXISTS:-}" ] || echo "vern-vern-requests" ;;
   "run services delete"*)
     [ -z "${STUB_NOTFOUND:-}" ] || { echo "ERROR: (gcloud.run.services.delete) Service [vern-spike] could not be found." >&2; exit 1; }
@@ -197,5 +199,27 @@ new_sandbox
 run_script "${BASE[@]}" STUB_NO_BILLING=1 -- --delete --yes
 [ "$RC" -ne 0 ] || fail "--delete without billing account exited 0"
 if grep -q " delete " "$T/gcloud.log"; then fail "deleted something without a billing account"; fi
+
+# A failing budget list or sink describe must fail --delete, not print Deleted.
+for e in STUB_LIST_ERR STUB_DESCRIBE_ERR; do
+  new_sandbox
+  run_script "${BASE[@]}" "$e=1" -- --delete --yes
+  [ "$RC" -ne 0 ] || fail "--delete exited 0 with $e"
+  if grep -q "Deleted" "$T/stdout"; then fail "printed Deleted with $e"; fi
+done
+
+# The same describe failure fails a deploy, before the service is replaced.
+new_sandbox
+run_script "${BASE[@]}" IMAGE=img STUB_DESCRIBE_ERR=1 --
+[ "$RC" -ne 0 ] || fail "deploy exited 0 with a failing sink describe"
+if grep -q "run services replace" "$T/gcloud.log"; then fail "service deployed before the exclusion was ensured"; fi
+
+# Deploy order: exclusion, then service, then public binding.
+new_sandbox
+run_script "${BASE[@]}" IMAGE=img --
+ex=$(grep -n "^logging sinks update" "$T/gcloud.log" | cut -d: -f1)
+rp=$(grep -n "^run services replace" "$T/gcloud.log" | cut -d: -f1)
+ib=$(grep -n "^run services add-iam-policy-binding" "$T/gcloud.log" | cut -d: -f1)
+[ "$ex" -lt "$rp" ] && [ "$rp" -lt "$ib" ] || fail "order wrong: exclusion=$ex replace=$rp binding=$ib"
 
 echo "cloudrun-deploy-test: all passed"

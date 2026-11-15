@@ -21,9 +21,9 @@ GCLOUD_CONFIG=my-config GCP_PROJECT=my-project deploy/cloudrun/deploy.sh
 
 `GCLOUD_CONFIG` names a gcloud configuration, and every gcloud call passes it with `--project`, so the active configuration is never used. Optional env: `REGION` (default `us-central1`), `SERVICE` (`vern`), `BUDGET_USD` (`30`) and `IMAGE`, which skips the build.
 
-The script is safe to re-run. It enables the four APIs it needs, creates the Artifact Registry repository `vern`, builds and pushes the image, deploys the service with public access, creates a budget alert at 50%, 90% and 100%, and prints the URL. The push uses a short-lived token in a temporary docker config, so your docker config is not changed. Elasticsearch comes from Docker Hub. It also excludes Cloud Run's request logs, which hold client IPs, so the hosted instance logs only vern's own request lines, as the Privacy page states.
+The script is safe to re-run. It enables the five APIs it needs, creates the Artifact Registry repository `vern`, builds and pushes the image, deploys the service with public access, creates a budget alert at 50%, 90% and 100%, and prints the URL. The push uses a short-lived token in a temporary docker config and logs out afterwards. On macOS this replaces, then removes, any keychain credential you already had for that Artifact Registry host. Elasticsearch comes from Docker Hub. It also excludes Cloud Run's request logs, which hold client IPs, so the hosted instance logs only vern's own request lines, as the Privacy page states.
 
-The project needs a linked billing account. Remove everything with:
+The project needs a linked billing account. `--delete` also removes the shared `vern` repository, so it affects every service that uses it. Remove everything with:
 
 ```bash
 GCLOUD_CONFIG=my-config GCP_PROJECT=my-project deploy/cloudrun/deploy.sh --delete --yes
@@ -33,7 +33,7 @@ After an idle period the first visit takes about a minute while Elasticsearch st
 
 ## Any VM with compose
 
-Install Docker, copy the repository, and run `make up`. To serve other hosts, put a TLS-terminating proxy in front of port 8080 and publish it with `VERN_PORT`. Set `VERN_HSTS=true` only behind HTTPS.
+Install Docker, copy the repository, and run `make up`. To serve other hosts, note that compose binds port 8080 to 127.0.0.1 only, so put a TLS-terminating proxy on the VM in front of it. Set `VERN_HSTS=true` only behind HTTPS.
 
 ## Your own Elasticsearch
 
