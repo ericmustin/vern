@@ -119,7 +119,7 @@ func TestConformance_Rules(t *testing.T) {
 		for _, name := range f.caseNames() {
 			f, name, want := f, name, f.Expect.Cases[name]
 			t.Run(f.Expect.Rule+"/"+name, func(t *testing.T) {
-				t.Parallel()
+				// Not parallel: the cases share one Elasticsearch, and concurrent runs trip a 1 GiB heap's breaker, like --max-concurrent above 1.
 				rep := scoreFile(t, e, f.casePath(name), samplescore.Options{})
 				rr, ok := findRule(rep, f.Expect.Rule)
 				if !ok {
