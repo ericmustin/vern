@@ -1,0 +1,6 @@
+rule: RES-001
+cases:
+  pass: { status: evaluated, services: { conf-res-001: true } }
+  fail: { status: evaluated, services: { conf-res-001: false } }
+  # service.instance.id present but empty: treated as missing.
+  empty: { status: evaluated, services: { conf-res-001: false } }

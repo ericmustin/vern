@@ -1,0 +1,20 @@
+rule: RES-010
+cases:
+  # Ordinary resource attributes (environment, host, version).
+  pass: { status: evaluated, services: { conf-res-010: true }, min_checks: 66 }
+  # An OpenAI-style API key in a resource attribute value.
+  fail: { status: evaluated, services: { conf-res-010: false } }
+  # A masked password and an environment-variable reference are placeholders, not secrets.
+  placeholder: { status: evaluated, services: { conf-res-010: true }, min_checks: 44 }
+  # An argument array (process.command_args) with a trustStorePassword flag.
+  fail_array: { status: evaluated, services: { conf-res-010: false } }
+  # A password under a sensitive key inside a map: the map is scanned as flattened JSON, so secret_kv matches it (not the key-name check).
+  fail_kv: { status: evaluated, services: { conf-res-010: false } }
+  # UUID, commit hash, timestamp, version, IP, decimal-comma number, route template, epoch, null/masked placeholders: none is sensitive.
+  fp_guards: { status: evaluated, services: { conf-res-010: true }, min_checks: 242 }
+  # A 1,500-character keyword value holding an email: not scanned (over 1024 characters), so the rule passes and the blind spot is disclosed.
+  long_value: { status: evaluated, services: { conf-res-010: true }, blind_spots_contains: ["longer than 1024 characters couldn't be scanned"], min_checks: 22 }
+  # A token inside a map nested in a map (nested maps are scanned).
+  nested_map: { status: evaluated, services: { conf-res-010: false } }
+  # Guards inside a map, an array and a nested map (including a masked password in the nested map).
+  fp_guards_map: { status: evaluated, services: { conf-res-010: true }, min_checks: 55 }

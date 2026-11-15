@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Privacy · Vern</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">Vern <span class="brand-sub">Instrumentation Score</span></a>
+    <nav class="site-nav" aria-label="Site">
+      <ul>
+        <li><a href="/">Score a sample</a></li>
+        <li><a href="methodology.html">Methodology</a></li>
+        <li><a href="privacy.html" aria-current="page">Privacy</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main" class="wrap">
+  <h1>Privacy</h1>
+  <div class="prose">
+    <p class="lead">Your upload is processed and deleted within seconds; nothing from it is stored or logged. Or run the scorer yourself:</p>
+<pre class="cmd">cp deploy/.env.example deploy/.env   # then set a password in deploy/.env
+docker compose -f deploy/compose.yaml up</pre>
+    <p>Run it from a checkout of the <a href="https://github.com/ericmustin/vern" target="_blank" rel="noopener noreferrer">Vern repository</a>.</p>
+
+    <h2>What happens to an upload</h2>
+    <ul>
+      <li>The files are read into memory and loaded as one isolated run into the scorer's own Elasticsearch.</li>
+      <li>The rules run against that run's data only. The data is deleted as soon as the score is computed, whether the run succeeds or fails. A cleanup job removes anything an interrupted run leaves behind.</li>
+      <li>The report is sent back to your browser and not kept on the server. Report downloads are generated in your browser.</li>
+    </ul>
+
+    <h2>What is logged</h2>
+    <p>One line per request: the method, the path, the response status, how long it took and a run identifier. Never the uploaded files, their names, their contents, query strings or request headers.</p>
+
+    <h2>What this page loads</h2>
+    <p>Only files from this server: no analytics, cookies, fonts or third-party scripts.</p>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Vern scores against the <a href="https://github.com/instrumentation-score/spec" target="_blank" rel="noopener noreferrer">Instrumentation Score spec</a>. <a href="https://github.com/ericmustin/vern" target="_blank" rel="noopener noreferrer">Source code</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,7 @@
+rule: MET-007
+cases:
+  # host.name, process.runtime.name and os.type are fine.
+  pass: { status: evaluated, services: { conf-met-007: true } }
+  fail: { status: evaluated, services: { conf-met-007: false } }
+  # Another of the six keys: os.description.
+  os_description: { status: evaluated, services: { conf-met-007: false } }

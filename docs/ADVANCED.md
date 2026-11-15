@@ -1,7 +1,7 @@
-# Advanced Reference
+# Advanced reference
 
-See [README.md](../README.md) for the overview and screenshots. This document
-covers commands, config flow, local validation, development, and release.
+Commands for the Elastic deployment path, the full config, local validation,
+development, and release. See [README.md](../README.md) for the overview.
 
 ## Install
 
@@ -46,7 +46,7 @@ dashboard, and Agent Builder.
 
 ### `vern review`
 
-Checks reproducibility and coverage. Use this before publishing changes.
+Checks reproducibility and coverage.
 
 ```bash
 vern review
@@ -55,8 +55,8 @@ vern review --strict-coverage
 vern review --live-es-url https://<your-project>.es.<region>.elastic.cloud
 ```
 
-`--live-es-url` executes rendered rule ES|QL against Elasticsearch. Auth is
-read from `ELASTIC_API_KEY` or `KIBANA_API_KEY`.
+`--live-es-url` runs the rendered rule ES|QL against Elasticsearch, using
+`ELASTIC_API_KEY` or `KIBANA_API_KEY` for auth.
 
 ### `vern generate`
 
@@ -112,8 +112,8 @@ powers MET-006 (metric name collisions with semconv keys) and RES-004 (semconv
 attribute placement).
 
 ```bash
-vern semconv sync           # dry run — prints catalog summary
-vern semconv sync --apply   # regenerate Go files + VERSION
+vern semconv sync           # dry run: prints a catalog summary
+vern semconv sync --apply   # regenerates the Go files and VERSION
 ```
 
 ### `vern agent setup`
@@ -130,7 +130,7 @@ vern agent setup
 | `--api-key` | `$KIBANA_API_KEY` | Kibana API key |
 | `--mappings` | from config | ES\|QL mappings file used for coverage content |
 
-## Config Reference
+## Config reference
 
 Full `vern.yaml`:
 
@@ -170,14 +170,9 @@ semconv:
 ```
 
 `filters.environments` and `filters.service_namespaces` are appended to every
-rule query as `AND (...)` predicates. Scope to prod-like environments to keep
-findings actionable; leave empty to evaluate across all data.
+rule query as `AND (...)` predicates. Leave them empty to evaluate all data.
 
-Coverage goal: zero missing mappings, enable rules only when they can produce
-accurate service-level rows, and document blockers where full coverage is not
-yet possible.
-
-## Local Validation
+## Local validation
 
 The demo stack validates rule ES|QL against local Elasticsearch. It does not
 run local Kibana or Elastic Workflows.
@@ -201,7 +196,7 @@ go run . setup --dry-run --kibana-url https://example.kb.us-east-1.elastic.cloud
 make dist
 ```
 
-Useful paths:
+Paths:
 
 | Path | Purpose |
 |---|---|

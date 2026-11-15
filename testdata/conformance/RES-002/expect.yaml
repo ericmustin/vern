@@ -1,0 +1,13 @@
+rule: RES-002
+cases:
+  pass: { status: evaluated, services: { conf-res-002: true } }
+  # The spec's example: id "abc" on pods payment-abc123 and payment-def456.
+  fail: { status: evaluated, services: { conf-res-002: false } }
+  # One pod, one id; traces add host.name, logs do not. Same logical resource.
+  same-pod-partial: { status: evaluated, services: { conf-res-002: true } }
+  # A restarted container in one pod keeps its id and gets a new container.id.
+  container-restart: { status: evaluated, services: { conf-res-002: true } }
+  # Outside Kubernetes, two containers sharing an id are two logical resources.
+  containers: { status: evaluated, services: { conf-res-002: false } }
+  # Outside Kubernetes, one id on hosts vm-1 and vm-2.
+  hosts: { status: evaluated, services: { conf-res-002: false } }

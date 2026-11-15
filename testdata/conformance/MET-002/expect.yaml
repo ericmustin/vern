@@ -1,0 +1,9 @@
+rule: MET-002
+cases:
+  pass: { status: evaluated, services: { conf-met-002: true } }
+  # One metric with unit "ms", one with the default empty unit.
+  fail: { status: evaluated, services: { conf-met-002: false } }
+  # "1" is UCUM dimensionless, not the default unit.
+  pass_dimensionless: { status: evaluated, services: { conf-met-002: true } }
+  # One metric name: the default empty unit in service a, "ms" in service b. Only a fails.
+  same_name_no_unit: { status: evaluated, services: { conf-met-002-a: false, conf-met-002-b: true } }

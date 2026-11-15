@@ -67,6 +67,7 @@ var agentSetupCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		mappings.ApplyWorkflowGates(mf.Rules, cfg) // same coverage as generate and setup
 		cov := coverage.Build(specRules, mf)
 
 		client := sync.NewClient(kibanaURL, apiKey)

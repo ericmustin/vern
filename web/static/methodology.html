@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Methodology · Vern</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+<script src="methodology.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">Vern <span class="brand-sub">Instrumentation Score</span></a>
+    <nav class="site-nav" aria-label="Site">
+      <ul>
+        <li><a href="/">Score a sample</a></li>
+        <li><a href="methodology.html" aria-current="page">Methodology</a></li>
+        <li><a href="privacy.html">Privacy</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main" class="wrap">
+  <h1>Methodology</h1>
+  <p class="lead">How Vern turns an OTLP sample into an Instrumentation Score, and which rules it checks.</p>
+
+  <section class="section prose" aria-labelledby="how-title">
+    <h2 id="how-title">How scoring runs</h2>
+    <p>Each upload is decoded, shifted to the present, and loaded as its own isolated run into a self-managed Elasticsearch 9.5.5 on the free Basic license. Each rule from the <a href="https://github.com/instrumentation-score/spec" target="_blank" rel="noopener noreferrer">Instrumentation Score spec</a> runs as an ES|QL query against that run's data only. Vern computes the score from the results, then deletes the run's data. The <a href="https://github.com/ericmustin/vern/blob/main/configs/esql-mappings.yaml" target="_blank" rel="noopener noreferrer">ES|QL queries</a> are public.</p>
+    <p>A rule query returns one result per service: whether the service passed, an extent (how much of its data the rule flagged) and an example of the evidence.</p>
+  </section>
+
+  <section class="section prose" aria-labelledby="formula-title">
+    <h2 id="formula-title">The formula</h2>
+    <p class="formula">Score = Σ(P<sub>i</sub> × W<sub>i</sub>) / Σ(T<sub>i</sub> × W<sub>i</sub>) × 100</p>
+    <p>For each rule <i>i</i>, T<sub>i</sub> is the number of services it checked and P<sub>i</sub> the number that passed. W<sub>i</sub> is the weight of the rule's impact:</p>
+    <table class="weights">
+      <thead><tr><th scope="col">Impact</th><th scope="col">Weight</th></tr></thead>
+      <tbody>
+        <tr><td>Critical</td><td>40</td></tr>
+        <tr><td>Important</td><td>30</td></tr>
+        <tr><td>Normal</td><td>20</td></tr>
+        <tr><td>Low</td><td>10</td></tr>
+      </tbody>
+    </table>
+    <p>A service's score uses only its own results; the overall score pools every service's results. Scores are shown with one decimal, and the category comes from the value shown: Poor below 50, Needs Improvement 50–74.9, Good 75–89.9, Excellent 90 and above.</p>
+  </section>
+
+  <section class="section prose" aria-labelledby="partial-title">
+    <h2 id="partial-title">Partial scores</h2>
+    <p>A rule counts toward the score only if it was evaluated on your sample. Every other rule is left out of both sums and listed with the result, with its reason:</p>
+    <ul>
+      <li><b>Not applicable</b>: the sample has none of the signal the rule checks (for example, no metrics).</li>
+      <li><b>Not assessable</b>: the sample cannot answer the question, for example because it covers too short a time.</li>
+      <li><b>Not implemented</b>: Vern has no query for the rule yet, or the rule is opt-in.</li>
+      <li><b>Advisory</b>: evaluated and shown for information, but not scored.</li>
+      <li><b>Error</b>: the rule's query failed. The run is flagged as not trustworthy.</li>
+    </ul>
+    <p>A partial score is computed from fewer rules than the spec defines, so compare it only with scores over the same rules.</p>
+  </section>
+
+  <section class="section prose" aria-labelledby="sensitive-title">
+    <h2 id="sensitive-title">Sensitive-data rules</h2>
+    <p>Four rules look for sensitive data: RES-010 (resource attributes), SPA-006 (span names, status messages, span and span event attributes), LOG-003 (log bodies and attributes) and MET-008 (metric names, units and data point attributes). They need to know which fields your sample has, so they run only in <code>vern score</code> and <code>vern serve</code>. <code>vern generate</code> leaves them out of the workflow, and <code>vern evaluate</code> reports them not assessable.</p>
+    <p><b>Heuristic.</b> Detection is best-effort pattern matching (email addresses, API keys and tokens, credit card numbers, US Social Security numbers, key=value secrets, and any non-empty value under a sensitive key name such as <code>password</code> or <code>authorization</code>). The spec's list is open-ended and no detector set is complete. Credit card numbers are matched by brand prefix and length, with no Luhn check. Placeholder values (masks such as <code>****</code>, <code>[REDACTED]</code>, <code>${ENV}</code>, <code>null</code>) do not count. Nested maps and arrays are scanned, and several values of one attribute are joined before matching.</p>
+    <p><b>Redaction.</b> Vern never copies a matched value into a report, an API response, the page or its logs. A failing rule shows the field, the kind of match and a masked preview. If an example from any other rule would contain a match, it is replaced with <code>example withheld: it matches &lt;kind&gt;</code>.</p>
+    <p><b>Blind spots.</b> Vern lists what it could not scan. It counts:</p>
+    <ul>
+      <li>keyword values longer than 1,024 characters (log bodies are scanned in full);</li>
+      <li>values cut to a rule's per-value limit, and fields or key names beyond the per-rule caps;</li>
+      <li>metric names that were dropped, and metric descriptions and exemplar attributes, which are not stored;</li>
+      <li>span events and log records with a zero or missing timestamp, which fall outside the scoring window;</li>
+      <li>long span status messages.</li>
+    </ul>
+    <p>Some gaps are <b>not counted</b>, so a pass does not rule them out:</p>
+    <ul>
+      <li>a malformed value under a key Elasticsearch types by name (for example a string that is not an IP under <code>*.ip</code>, or a bad <code>*.timestamp</code>) reads as null to the query;</li>
+      <li>attributes beyond Elasticsearch's 1,000-field mapping limit are not indexed, so they are not scanned.</li>
+    </ul>
+    <p>Span events are told apart from log records by the missing <code>observed_timestamp</code>, which Elasticsearch's native OTLP ingest writes on log records only. SPA-006 scans the span events together with spans, and LOG-003 scans log records only.</p>
+  </section>
+
+  <section class="section" aria-labelledby="rules-title">
+    <h2 id="rules-title">Rules</h2>
+    <p id="rules-meta" class="hint">Loading the rules…</p>
+    <div id="rules-error" class="banner banner-error" role="alert" hidden></div>
+    <div id="rules"></div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Vern scores against the <a href="https://github.com/instrumentation-score/spec" target="_blank" rel="noopener noreferrer">Instrumentation Score spec</a>. <a href="https://github.com/ericmustin/vern" target="_blank" rel="noopener noreferrer">Source code</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

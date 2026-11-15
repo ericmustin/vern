@@ -1,0 +1,10 @@
+rule: SPA-003
+# Advisory: the spec criteria are TODO, so the rule is evaluated but never scored.
+# The services map pins the heuristic in configs/esql-mappings.yaml.
+cases:
+  # 60 spans, one name.
+  pass: { status: evaluated, scored: false, services: { conf-spa-003: true } }
+  # 250 spans, 250 names: over 200 distinct and a ratio over 0.3.
+  fail: { status: evaluated, scored: false, services: { conf-spa-003: false } }
+  # 49 spans, 49 names: under 50 spans is too small a sample to judge.
+  small_sample: { status: evaluated, scored: false, services: { conf-spa-003: true } }

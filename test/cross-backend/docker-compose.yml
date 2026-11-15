@@ -1,0 +1,137 @@
+# Cross-backend validation stack.
+#
+# One OTel collector fans the same OTLP stream into three storage backends.
+# `vern evaluate` is then run against each and `vern compare` diffs the
+# resulting scores. See README.md.
+#
+# Image tags are pinned for reproducibility — bump deliberately.
+#
+# RESOURCE REQUIREMENT: three database engines run concurrently. Allocate the
+# Docker engine at least 6 GB of memory (8 GB comfortable). With less, the
+# OpenSearch container is OOM-killed (exit 137) once all three are running.
+# Docker Desktop: Settings -> Resources -> Memory.
+
+name: vern-cross-backend
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.license.self_generated.type=basic
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    environment:
+      # Recent ClickHouse images reject passwordless `default` over the network,
+      # so set an explicit dev password (non-secret — local test stack only).
+      - CLICKHOUSE_DB=otel
+      - CLICKHOUSE_PASSWORD=vern-dev
+    ports:
+      - "8123:8123"   # HTTP — used by `vern evaluate --backend clickhouse`
+      - "9000:9000"   # native — used by the OTel collector exporter
+    volumes:
+      - ch-data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --password vern-dev --query 'SELECT 1' >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  opensearch:
+    image: opensearchproject/opensearch:2.18.0
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - "DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI=true"
+      - bootstrap.memory_lock=true
+    ports:
+      - "9201:9200"   # host 9201 to avoid the Elasticsearch port clash
+    volumes:
+      - os-data:/usr/share/opensearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.152.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    # No healthcheck: the collector-contrib image is distroless (no shell/curl).
+    # Generators depend on service_started; wait-for-data.sh is the real gate.
+
+  trafficgen:
+    build: ../../demo/trafficgen
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - VERN_DEMO_RATE=${VERN_DEMO_RATE:-5}
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  otelgen-logs:
+    image: ghcr.io/krzko/otelgen:v0.5.2
+    command:
+      - --otel-exporter-otlp-endpoint=otel-collector:4317
+      - --insecure
+      - --rate=3
+      - --duration=86400
+      - logs
+      - multi
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  metricsgen:
+    build: ../../demo/metricsgen
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+volumes:
+  es-data:
+  ch-data:
+  os-data:

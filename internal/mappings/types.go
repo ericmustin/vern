@@ -23,6 +23,25 @@ type RuleMapping struct {
 	// metadata that drifts. Empty string means the rule is unconditionally
 	// enabled when Enabled is true.
 	OptInFlag string `yaml:"opt_in_flag"`
+
+	// Signal is "traces", "logs", "metrics" or "any".
+	Signal string `yaml:"signal"`
+	// MinObservation is a Go duration string (e.g. "336h").
+	MinObservation string `yaml:"min_observation"`
+	Advisory       bool   `yaml:"advisory"`
+	Heuristic      bool   `yaml:"heuristic"`
+	Deviation      string `yaml:"deviation"`
+	Remediation    string `yaml:"remediation"`
+	// Sensitive marks the sensitive-data rules (RES-010, SPA-006, LOG-003,
+	// MET-008). They scan the run's discovered fields, so a failed field
+	// discovery turns them into errors without affecting other rules.
+	Sensitive bool `yaml:"sensitive"`
+	// ScanGroups names the Fields groups a sensitive-data rule's query scans
+	// (GroupResource, GroupScope, ..., GroupMetricNames for metric names).
+	// Fields.SensitiveScan(ScanGroups) gives the capped field list (the
+	// template's .ScanFields), its overflow, the metric names
+	// (.ScanMetricNames) and the per-value character budget.
+	ScanGroups []string `yaml:"scan_groups"`
 }
 
 type ResolvedMapping struct {

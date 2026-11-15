@@ -1,0 +1,12 @@
+rule: RES-006
+cases:
+  pass: { status: evaluated, services: { conf-res-006: true } }
+  # Multi-valued ["low", "Critical"]: each value is checked.
+  fail: { status: evaluated, services: { conf-res-006: false } }
+  uppercase: { status: evaluated, services: { conf-res-006: false } }
+  # " high" trims to a well-known value but is not exactly it.
+  whitespace: { status: evaluated, services: { conf-res-006: false } }
+  # Custom values pass, per the spec.
+  custom: { status: evaluated, services: { conf-res-006: true } }
+  # No service.criticality: nothing to check.
+  absent: { status: not_applicable }

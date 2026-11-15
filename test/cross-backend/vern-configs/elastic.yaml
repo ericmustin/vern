@@ -1,0 +1,20 @@
+# vern config for the cross-backend harness — Elastic backend.
+# Run from the repo root: vern evaluate --config test/cross-backend/vern-configs/elastic.yaml
+backend: esql
+rules_dir: ./spec/rules
+mappings: ./configs/esql-mappings.yaml
+
+esql:
+  # Short window — the harness ingests fresh data on every run.
+  time_window: "1h"
+  # OTel collector elasticsearch exporter (mapping mode: otel) writes to
+  # traces-generic.otel-default etc.
+  index_patterns:
+    traces: "traces-*.otel-*"
+    metrics: "metrics-*.otel-*"
+    logs: "logs-*.otel-*"
+  cardinality_threshold: 10000
+
+elastic:
+  elasticsearch_url: "http://localhost:9200"
+  # security disabled in the dev stack — no api_key needed

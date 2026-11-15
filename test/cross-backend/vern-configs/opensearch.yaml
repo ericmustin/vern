@@ -1,0 +1,22 @@
+# vern config for the cross-backend harness — OpenSearch backend.
+# Run from the repo root: vern evaluate --config test/cross-backend/vern-configs/opensearch.yaml
+#
+# NOTE: the OTel collector's opensearch exporter does not support metrics, so
+# the ss4o_metrics index never gets created. MET-001 and MET-006 will soft-fail
+# here; that is expected and `vern compare` is told so via --expected-gap.
+backend: opensearch
+rules_dir: ./spec/rules
+mappings: ./configs/opensearch-mappings.yaml
+
+opensearch:
+  url: "http://localhost:9201"
+  username: ""
+  password: ""
+  # OpenSearch PPL INTERVAL clause units.
+  time_window: "1 HOUR"
+  cardinality_threshold: 10000
+  # SS4O index names written by the collector (dataset=vern, namespace=default).
+  index_patterns:
+    traces: "ss4o_traces-vern-default"
+    metrics: "ss4o_metrics-vern-default"
+    logs: "ss4o_logs-vern-default"

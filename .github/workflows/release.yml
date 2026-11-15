@@ -94,7 +94,7 @@ jobs:
             rm -rf "dist/${name}"
           done
 
-          (cd dist && shasum -a 256 * > checksums.txt)
+          (cd dist && shasum -a 256 -- * > checksums.txt)
 
       - name: Create GitHub release
         if: github.ref_type == 'tag'
@@ -102,9 +102,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          # Pre-release tags (containing '-', e.g. v1.0.0-rc1) must not become
+          # the "latest" release that the action's version: latest resolves.
+          prerelease=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
           gh release create "${{ steps.version.outputs.version }}" dist/* \
             --title "vern ${{ steps.version.outputs.version }}" \
-            --generate-notes
+            --generate-notes "${prerelease[@]}"
 
       - name: Upload workflow artifacts
         if: github.ref_type != 'tag'

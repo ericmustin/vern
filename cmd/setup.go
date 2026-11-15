@@ -231,12 +231,14 @@ func buildSetupArtifacts() (*setupArtifacts, error) {
 	if err != nil {
 		return nil, err
 	}
+	mappings.ApplyWorkflowGates(mf.Rules, cfg) // before coverage so it matches resolution (idempotent)
+
 	specRules, err := coverage.LoadSpecRules(cfg.RulesDir)
 	if err != nil {
 		return nil, err
 	}
 	cov := coverage.Build(specRules, mf)
-	resolved, err := mappings.Resolve(mf.Rules, cfg)
+	resolved, err := resolveForWorkflow(mf, cfg)
 	if err != nil {
 		return nil, err
 	}

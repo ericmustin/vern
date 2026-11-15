@@ -1,0 +1,22 @@
+rule: SPA-006
+cases:
+  # UUIDs, a commit hash, an ISO-8601 timestamp, an IPv4 address and a route template.
+  pass: { status: evaluated, services: { conf-spa-006: true }, min_checks: 77 }
+  # An email address in a span attribute value.
+  fail: { status: evaluated, services: { conf-spa-006: false } }
+  # A password in a span event attribute (span events are scanned with spans).
+  event: { status: evaluated, services: { conf-spa-006: false } }
+  # Any non-empty value under a sensitive key name (authorization header).
+  key: { status: evaluated, services: { conf-spa-006: false } }
+  # An array attribute holding an email.
+  fail_array: { status: evaluated, services: { conf-spa-006: false } }
+  # A password in a URL query string.
+  fail_kv: { status: evaluated, services: { conf-spa-006: false } }
+  # UUID, commit hash, timestamp, version, IP, decimal-comma number, route template, epoch, null/masked placeholders: none is sensitive.
+  fp_guards: { status: evaluated, services: { conf-spa-006: true }, min_checks: 242 }
+  # A 1,500-character keyword value holding an email: not scanned (over 1024 characters), so the rule passes and the blind spot is disclosed.
+  long_value: { status: evaluated, services: { conf-spa-006: true }, blind_spots_contains: ["longer than 1024 characters couldn't be scanned"], min_checks: 22 }
+  # An email inside nested maps (nested maps are scanned).
+  nested_map: { status: evaluated, services: { conf-spa-006: false } }
+  # Guards in a span event attribute, the span name and the status message.
+  fp_guards_event: { status: evaluated, services: { conf-spa-006: true }, min_checks: 297 }

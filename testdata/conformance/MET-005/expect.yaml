@@ -1,0 +1,9 @@
+rule: MET-005
+cases:
+  pass: { status: evaluated, services: { conf-met-005: true } }
+  # The spec's example: collection.duration.seconds.
+  fail: { status: evaluated, services: { conf-met-005: false } }
+  # Case-insensitive: Payload_Bytes.
+  uppercase: { status: evaluated, services: { conf-met-005: false } }
+  # A unit word inside a longer token (bytesize) is not a unit suffix.
+  substring: { status: evaluated, services: { conf-met-005: true } }

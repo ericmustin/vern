@@ -1,0 +1,18 @@
+rule: MET-008
+cases:
+  # An ordinary metric name and data point attribute.
+  pass: { status: evaluated, services: { conf-met-008: true }, min_checks: 44 }
+  # An email address in a data point attribute value.
+  fail: { status: evaluated, services: { conf-met-008: false } }
+  # An email address in the metric name itself (checked against field names).
+  name: { status: evaluated, services: { conf-met-008: false } }
+  # An array data point attribute holding an email.
+  fail_array: { status: evaluated, services: { conf-met-008: false } }
+  # A password in a data point attribute value.
+  fail_kv: { status: evaluated, services: { conf-met-008: false } }
+  # UUID, commit hash, timestamp, version, IP, decimal-comma number, route template, epoch, null/masked placeholders: none is sensitive.
+  fp_guards: { status: evaluated, services: { conf-met-008: true }, min_checks: 253 }
+  # A 1,500-character keyword value holding an email: not scanned (over 1024 characters), so the rule passes and the blind spot is disclosed.
+  long_value: { status: evaluated, services: { conf-met-008: true }, blind_spots_contains: ["longer than 1024 characters couldn't be scanned"], min_checks: 33 }
+  # An email inside nested maps (nested maps are scanned).
+  nested_map: { status: evaluated, services: { conf-met-008: false } }

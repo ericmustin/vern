@@ -1,0 +1,1 @@
+{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"conf-spa-004"}}]},"scopeSpans":[{"scope":{"name":"conformance"},"spans":[{"traceId":"4bf92f3577b34da6a3ce929d00004002","spanId":"00f067aa000001a8","name":"GET inventory","kind":3,"startTimeUnixNano":"1794672000000000000","endTimeUnixNano":"1794672000100000000","status":{}}]}]}]}

@@ -1,0 +1,219 @@
+name: Vern instrumentation score
+description: Score OpenTelemetry captures with the Instrumentation Score spec using a throwaway Elasticsearch, and optionally export the score over OTLP.
+author: ericmustin
+branding:
+  icon: activity
+  color: blue
+
+inputs:
+  files:
+    description: OTLP capture files or globs, separated by spaces or newlines. Paths must not contain whitespace.
+    required: true
+  min-score:
+    description: Fail the step (exit code 2) when the score is below this value. Unset means no gate.
+    required: false
+    default: ""
+  otlp-endpoint:
+    description: >-
+      OTLP/HTTP base endpoint to export the score to; wins over OTEL_EXPORTER_OTLP_[METRICS_]ENDPOINT.
+      Unset falls back to those variables from the job or workflow env, and export is disabled when
+      none is set.
+    required: false
+    default: ""
+  otlp-headers:
+    description: >-
+      OTLP export headers as key=value pairs separated by commas. Pass a secret; the action masks
+      every value. Unset keeps an OTEL_EXPORTER_OTLP_HEADERS set in the job or workflow env.
+    required: false
+    default: ""
+  version:
+    description: >-
+      Vern version to run. Unset uses the tag the action was referenced by (uses: ericmustin/vern@v1.2.3
+      runs vern v1.2.3) and falls back to "latest" for a branch or SHA ref. "latest" downloads the
+      newest GitHub release and "source" builds from the action checkout with setup-go. A tag such as
+      v1.2.3 pins a release. No published release contains `vern score` yet, so "latest" only works
+      after the next tagged release; use "source" until then.
+    required: false
+    default: ""
+  elasticsearch-image:
+    description: Elasticsearch image for the throwaway cluster. Unset uses the script default.
+    required: false
+    default: ""
+  output-dir:
+    description: Directory for report.json, report.md and outputs.env.
+    required: false
+    default: vern-report
+  artifact-name:
+    description: Artifact name for the uploaded report. Set a distinct name per use in a job or per matrix leg to avoid collisions.
+    required: false
+    default: vern-report
+  upload-artifact:
+    description: Upload the output directory as an artifact ("true" or "false").
+    required: false
+    default: "true"
+
+outputs:
+  score:
+    description: Instrumentation score (0-100).
+    value: ${{ steps.score.outputs.score }}
+  category:
+    description: Score category.
+    value: ${{ steps.score.outputs.category }}
+  scored:
+    description: '"true" when a score was computed.'
+    value: ${{ steps.score.outputs.scored }}
+  report-json:
+    description: Path of the JSON report.
+    value: ${{ steps.score.outputs.report_json }}
+  report-md:
+    description: Path of the Markdown report.
+    value: ${{ steps.score.outputs.report_md }}
+  exit-code:
+    description: >-
+      Exit code of vern score: 0 ok, 1 error, 2 below min-score (or not scored with min-score set).
+      Use it with continue-on-error to tell a failed gate from an error.
+    value: ${{ steps.score.outputs.exit_code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mask OTLP header values
+      if: inputs.otlp-headers != ''
+      shell: bash
+      env:
+        OTLP_HEADERS: ${{ inputs.otlp-headers }}
+      run: |
+        set -euo pipefail
+        echo "::add-mask::$OTLP_HEADERS"
+        IFS=',' read -r -a pairs <<<"$OTLP_HEADERS"
+        for pair in "${pairs[@]}"; do
+          value=${pair#*=}
+          [ -n "$value" ] || continue
+          echo "::add-mask::$value"
+          # Values are URL-decoded by vern; mask the decoded form too.
+          decoded=$(printf '%b' "${value//%/\\x}") || decoded=
+          [ -z "$decoded" ] || echo "::add-mask::$decoded"
+        done
+
+    - name: Resolve vern version
+      id: resolve
+      if: inputs.version != 'source'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+        GH_TOKEN: ${{ github.token }}
+        RUNNER_OS_NAME: ${{ runner.os }}
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS_NAME" != "Linux" ]; then
+          echo "::error::vern action supports Linux runners only (got $RUNNER_OS_NAME)"
+          exit 1
+        fi
+        case "$RUNNER_ARCH_NAME" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::unsupported runner architecture: $RUNNER_ARCH_NAME"; exit 1 ;;
+        esac
+        tag=$VERSION
+        if [ -z "$tag" ]; then
+          # Pinning the action to a release tag pins the binary too.
+          if [[ "$ACTION_REF" =~ ^v[0-9] ]]; then
+            tag=$ACTION_REF
+          else
+            tag=latest
+          fi
+        fi
+        if [ "$tag" = latest ]; then
+          tag=$(gh release view --repo ericmustin/vern --json tagName -q .tagName)
+        fi
+        [ -n "$tag" ] || { echo "::error::could not resolve the vern version"; exit 1; }
+        echo "tag=$tag" >>"$GITHUB_OUTPUT"
+        echo "arch=$arch" >>"$GITHUB_OUTPUT"
+
+    - name: Download vern release
+      if: inputs.version != 'source'
+      shell: bash
+      env:
+        TAG: ${{ steps.resolve.outputs.tag }}
+        ARCH: ${{ steps.resolve.outputs.arch }}
+        GH_TOKEN: ${{ github.token }}
+        RUNNER_TEMP_DIR: ${{ runner.temp }}
+      run: |
+        set -euo pipefail
+        dl="$RUNNER_TEMP_DIR/vern-download"
+        rm -rf "$dl"
+        mkdir -p "$dl"
+        name="vern_${TAG}_linux_${ARCH}"
+        gh release download "$TAG" --repo ericmustin/vern \
+          --pattern "${name}.tar.gz" --pattern checksums.txt --dir "$dl"
+        (cd "$dl" && sha256sum -c --ignore-missing checksums.txt)
+        tar -C "$dl" -xzf "$dl/${name}.tar.gz"
+        cp "$dl/$name/vern" "$RUNNER_TEMP_DIR/vern"
+        chmod +x "$RUNNER_TEMP_DIR/vern"
+
+    - name: Read Go version from go.mod
+      id: gover
+      if: inputs.version == 'source'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        v=$(awk '/^go /{print $2; exit}' "$ACTION_PATH/go.mod")
+        [ -n "$v" ] || { echo "::error::no go directive in $ACTION_PATH/go.mod"; exit 1; }
+        echo "v=$v" >>"$GITHUB_OUTPUT"
+
+    - name: Set up Go
+      if: inputs.version == 'source'
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ steps.gover.outputs.v }}
+        cache: false
+
+    - name: Build vern from source
+      if: inputs.version == 'source'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RUNNER_TEMP_DIR: ${{ runner.temp }}
+        ACTION_SHA: ${{ github.action_ref }}
+        WORKFLOW_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        rev=${ACTION_SHA:-${WORKFLOW_SHA::12}}
+        (cd "$ACTION_PATH" && go build \
+          -ldflags "-X github.com/ericmustin/vern/cmd.version=source-${rev}" \
+          -o "$RUNNER_TEMP_DIR/vern" .)
+
+    - name: Score
+      id: score
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RUNNER_TEMP_DIR: ${{ runner.temp }}
+        VERN_FILES: ${{ inputs.files }}
+        VERN_MIN_SCORE: ${{ inputs.min-score }}
+        VERN_OUTPUT_DIR: ${{ inputs.output-dir }}
+        VERN_ES_IMAGE: ${{ inputs.elasticsearch-image }}
+        # Private names: the script passes the endpoint as --otlp-endpoint (so it
+        # wins over OTEL_EXPORTER_OTLP_METRICS_ENDPOINT) and exports the headers
+        # only when non-empty, so job-level OTEL_EXPORTER_OTLP_* values survive
+        # an unset input.
+        VERN_OTLP_ENDPOINT: ${{ inputs.otlp-endpoint }}
+        VERN_OTLP_HEADERS: ${{ inputs.otlp-headers }}
+      run: |
+        set -euo pipefail
+        export VERN_BIN="$RUNNER_TEMP_DIR/vern"
+        # An empty image input must fall back to the script default.
+        [ -n "$VERN_ES_IMAGE" ] || unset VERN_ES_IMAGE
+        exec bash "$ACTION_PATH/ci/vern-ci.sh"
+
+    - name: Upload report
+      if: always() && inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.output-dir }}
+        if-no-files-found: warn

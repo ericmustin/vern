@@ -1,0 +1,60 @@
+# OTel collector config for the cross-backend validation stack.
+#
+# A single OTLP receiver feeds three exporters so all three backends see
+# identical telemetry. Metrics go only to Elastic + ClickHouse — the
+# opensearch exporter does not support the metrics signal (would need
+# Data Prepper). See ../README.md.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  # OTel-native field mapping preserves resource.attributes.service.name etc.,
+  # which is what configs/esql-mappings.yaml queries expect.
+  elasticsearch/es:
+    endpoints: ["http://elasticsearch:9200"]
+    mapping:
+      mode: otel
+
+  # Native protocol on 9000; auto-creates the otel database + otel_* tables.
+  clickhouse:
+    endpoint: tcp://clickhouse:9000
+    database: otel
+    username: default
+    password: vern-dev
+    create_schema: true
+
+  # SS4O mode writes ss4o_traces-vern-default / ss4o_logs-vern-default.
+  opensearch:
+    http:
+      endpoint: http://opensearch:9200
+    dataset: vern
+    namespace: default
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [elasticsearch/es, clickhouse, opensearch]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [elasticsearch/es, clickhouse, opensearch]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [elasticsearch/es, clickhouse]

@@ -2,9 +2,13 @@ package review
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -156,4 +160,37 @@ func hasIssue(report *Report, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestReview_LivePlansOptInRuleWhenFlagOn(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		queries = append(queries, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"columns":[],"values":[]}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "vern.yaml")
+	cfg := minimalConfig(filepath.Join("..", "..", "spec", "rules"), filepath.Join("..", "..", "configs", "esql-mappings.yaml"), "custom-score-results")
+	writeFile(t, configPath, cfg+"filters:\n  enable_sdk_rules: true\n")
+
+	if _, err := Run(context.Background(), Options{ConfigPath: configPath, LiveESURL: srv.URL}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// "telemetry.sdk.language" alone is not discriminating: other rules list it in
+	// misplaced-key checks. "is_unsupported" appears only in SDK-001.
+	mu.Lock()
+	defer mu.Unlock()
+	for _, q := range queries {
+		if strings.Contains(q, "is_unsupported") {
+			return
+		}
+	}
+	t.Fatalf("no SDK-001 query recorded among %d live queries", len(queries))
 }

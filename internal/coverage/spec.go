@@ -2,7 +2,9 @@ package coverage
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,19 +19,36 @@ type SpecRule struct {
 	Path        string `json:"path"`
 }
 
+// LoadSpecRules reads spec rule markdown files from a directory on disk.
+// SpecRule.Path is the on-disk path (dir joined with the file name).
 func LoadSpecRules(dir string) ([]SpecRule, error) {
-	entries, err := os.ReadDir(dir)
+	return loadSpecRules(os.DirFS(dir), ".", func(name string) string {
+		return filepath.Join(dir, name)
+	})
+}
+
+// LoadSpecRulesFS reads spec rule markdown files from dir inside fsys (for
+// example the embedded spec.FS). Files starting with "_" are skipped and the
+// result is sorted by rule ID. SpecRule.Path is the fs path.
+func LoadSpecRulesFS(fsys fs.FS, dir string) ([]SpecRule, error) {
+	return loadSpecRules(fsys, dir, func(name string) string {
+		return path.Join(dir, name)
+	})
+}
+
+func loadSpecRules(fsys fs.FS, dir string, display func(name string) string) ([]SpecRule, error) {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return nil, fmt.Errorf("read rules dir %s: %w", dir, err)
 	}
 
 	var rules []SpecRule
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" || strings.HasPrefix(entry.Name(), "_") {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".md" || strings.HasPrefix(name, "_") {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		rule, err := parseSpecRule(path)
+		rule, err := parseSpecRule(fsys, path.Join(dir, name), display(name))
 		if err != nil {
 			return nil, err
 		}
@@ -40,10 +59,10 @@ func LoadSpecRules(dir string) ([]SpecRule, error) {
 	return rules, nil
 }
 
-func parseSpecRule(path string) (SpecRule, error) {
-	data, err := os.ReadFile(path)
+func parseSpecRule(fsys fs.FS, fsPath, display string) (SpecRule, error) {
+	data, err := fs.ReadFile(fsys, fsPath)
 	if err != nil {
-		return SpecRule{}, fmt.Errorf("read spec rule %s: %w", path, err)
+		return SpecRule{}, fmt.Errorf("read spec rule %s: %w", display, err)
 	}
 	body := string(data)
 	rule := SpecRule{
@@ -51,16 +70,16 @@ func parseSpecRule(path string) (SpecRule, error) {
 		Description: specField(body, "Description"),
 		Target:      specField(body, "Target"),
 		Impact:      specField(body, "Impact"),
-		Path:        path,
+		Path:        display,
 	}
 	if rule.ID == "" {
-		return SpecRule{}, fmt.Errorf("parse spec rule %s: missing Rule ID", path)
+		return SpecRule{}, fmt.Errorf("parse spec rule %s: missing Rule ID", display)
 	}
 	if rule.Target == "" {
-		return SpecRule{}, fmt.Errorf("parse spec rule %s: missing Target", path)
+		return SpecRule{}, fmt.Errorf("parse spec rule %s: missing Target", display)
 	}
 	if rule.Impact == "" {
-		return SpecRule{}, fmt.Errorf("parse spec rule %s: missing Impact", path)
+		return SpecRule{}, fmt.Errorf("parse spec rule %s: missing Impact", display)
 	}
 	rule.Target = normalizeWhitespace(rule.Target)
 	rule.Impact = normalizeWhitespace(rule.Impact)

@@ -1,0 +1,22 @@
+rule: LOG-003
+cases:
+  # An ordinary access-log body.
+  pass: { status: evaluated, services: { conf-log-003: true }, min_checks: 22 }
+  # A card number in a string body.
+  fail: { status: evaluated, services: { conf-log-003: false } }
+  # A US SSN inside a map body (body.structured).
+  map_body: { status: evaluated, services: { conf-log-003: false } }
+  # An array log attribute holding an email.
+  fail_array: { status: evaluated, services: { conf-log-003: false } }
+  # An API key in a string body.
+  fail_kv: { status: evaluated, services: { conf-log-003: false } }
+  # UUID, commit hash, timestamp, version, IP, decimal-comma number, route template, epoch, null/masked placeholders: none is sensitive.
+  fp_guards: { status: evaluated, services: { conf-log-003: true }, min_checks: 242 }
+  # A 1,500-character keyword value holding an email: not scanned (over 1024 characters), so the rule passes and the blind spot is disclosed.
+  long_value: { status: evaluated, services: { conf-log-003: true }, blind_spots_contains: ["longer than 1024 characters couldn't be scanned"], min_checks: 22 }
+  # An SSN inside a nested map body (nested maps are scanned).
+  nested_map: { status: evaluated, services: { conf-log-003: false } }
+  # The same long value as the body (body.text is scanned in full): LOG-003 fails.
+  long_body: { status: evaluated, services: { conf-log-003: false } }
+  # Guards in a map body (body.structured) with a masked password.
+  fp_guards_body: { status: evaluated, services: { conf-log-003: true }, min_checks: 22 }

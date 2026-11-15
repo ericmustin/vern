@@ -1,0 +1,1 @@
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"conf-met-002"}}]},"scopeMetrics":[{"scope":{"name":"conformance"},"metrics":[{"name":"conf.met002.utilization","unit":"1","gauge":{"dataPoints":[{"timeUnixNano":"1794672000000000000","asDouble":0.42}]}}]}]}]}

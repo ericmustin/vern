@@ -1,0 +1,6 @@
+rule: RES-007
+cases:
+  pass: { status: evaluated, services: { conf-res-007: true } }
+  fail: { status: evaluated, services: { conf-res-007: false } }
+  # deployment.environment.name present but empty.
+  empty: { status: evaluated, services: { conf-res-007: false } }

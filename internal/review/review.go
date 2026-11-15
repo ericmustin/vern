@@ -18,8 +18,6 @@ import (
 	"github.com/ericmustin/vern/internal/coverage"
 	"github.com/ericmustin/vern/internal/dashboard"
 	"github.com/ericmustin/vern/internal/mappings"
-	"github.com/ericmustin/vern/internal/sdksupport"
-	"github.com/ericmustin/vern/internal/semconv"
 	"github.com/ericmustin/vern/internal/workflow/elastic"
 )
 
@@ -115,19 +113,11 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 		report.addError("spec", err.Error())
 		return finalize(report, opts), nil
 	}
+	mappings.ApplyOptInGates(mf.Rules, cfg) // same gating as evaluate/generate/setup; before coverage so it matches resolution
 	report.Coverage = coverage.Build(specRules, mf)
 	report.compareMappingsToSpec(specRules, mf.Rules)
 
-	resolved, err := mappings.ResolveWithData(mf.Rules, cfg, mappings.TemplateData{
-		SemconvAttributeKeys:    semconv.QuotedCSV(semconv.AttributeKeys),
-		SemconvResourceOnlyKeys: semconv.QuotedCSV(semconv.ResourceOnlyKeys),
-		SemconvSpanOnlyKeys:     semconv.QuotedCSV(semconv.SpanOnlyKeys),
-		SemconvLogOnlyKeys:      semconv.QuotedCSV(semconv.LogOnlyKeys),
-		SemconvMetricOnlyKeys:   semconv.QuotedCSV(semconv.MetricOnlyKeys),
-		MET001AttrKeys:          semconv.MET001AttrAllowlist(),
-		MET006SemconvKeys:       semconv.QuotedCSV(semconv.MET006CuratedKeys()),
-		SDKSupportMatrix:        sdksupport.RenderESQLCase("resource.attributes.telemetry.sdk.language", "resource.attributes.telemetry.sdk.version"),
-	})
+	resolved, err := mappings.ResolveWithData(mf.Rules, cfg, mappings.SemconvCatalog())
 	if err != nil {
 		report.addError("resolve", err.Error())
 		return finalize(report, opts), nil

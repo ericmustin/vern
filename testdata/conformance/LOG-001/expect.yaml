@@ -1,0 +1,10 @@
+rule: LOG-001
+cases:
+  # Production DEBUG logs every day for 15 days (first and last 360 h apart).
+  fail: { status: evaluated, services: { conf-log-001: false } }
+  # 15 days of production logs; DEBUG only on the last day.
+  pass: { status: evaluated, services: { conf-log-001: true } }
+  # Production DEBUG logs spanning 1 h: too short to observe 14 days.
+  short: { status: not_assessable }
+  # 15 days of DEBUG logs in staging: no production telemetry, so nothing to judge.
+  staging: { status: not_applicable }

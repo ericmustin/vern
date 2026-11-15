@@ -1,0 +1,85 @@
+name: vern
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.license.self_generated.type=basic
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?set in deploy/.env}
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u \"elastic:$$ELASTIC_PASSWORD\" 'localhost:9200/_cluster/health?wait_for_status=yellow'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  vern-init:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+    # root so the key file can be chowned to the distroless nonroot uid (65532).
+    user: "0"
+    entrypoint: ["bash", "/init/vern-init.sh"]
+    restart: "no"
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?set in deploy/.env}
+      - ES_URL=http://elasticsearch:9200
+    volumes:
+      - ./init:/init:ro
+      - vern-secrets:/run/vern
+    networks:
+      - backend
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # Runs `vern serve` (web UI and API on 127.0.0.1:${VERN_PORT:-8080}).
+  # `docker compose run --rm vern score /samples/<file>` still runs the CLI.
+  # vern-init creates the component template, so serve needs no
+  # VERN_SETUP_TEMPLATE (the API key has no template privileges anyway).
+  vern:
+    build:
+      context: ..
+    image: vern:dev
+    command: ["serve"]
+    ports:
+      - "127.0.0.1:${VERN_PORT:-8080}:8080"
+    networks:
+      - backend
+      - default
+    environment:
+      - VERN_ELASTICSEARCH_URL=http://elasticsearch:9200
+      - VERN_API_KEY_FILE=/run/vern/api-key
+      - VERN_MAX_CONCURRENT_RUNS=${VERN_MAX_CONCURRENT_RUNS:-1}
+    volumes:
+      - vern-secrets:/run/vern:ro
+      - ${SAMPLES_DIR:-../web/examples}:/samples:ro
+    healthcheck:
+      # Distroless: no shell or curl, so vern probes its own /healthz.
+      test: ["CMD", "/vern", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Room for an in-flight run to finish and purge before docker sends
+    # SIGKILL: vern waits up to run timeout + 10s on SIGTERM. 135s covers the
+    # default 120s run timeout; if you set VERN_RUN_TIMEOUT, keep this at
+    # least VERN_RUN_TIMEOUT + 15s.
+    stop_grace_period: 135s
+    depends_on:
+      vern-init:
+        condition: service_completed_successfully
+
+networks:
+  backend:
+    internal: true
+  default: {}
+
+volumes:
+  es-data:
+  vern-secrets:

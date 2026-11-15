@@ -1,0 +1,7 @@
+rule: RES-004
+cases:
+  pass: { status: evaluated, services: { conf-res-004: true } }
+  # The spec's example: service.name in span attributes.
+  fail: { status: evaluated, services: { conf-res-004: false } }
+  # A resource-only key (host.name) in log record attributes.
+  log_attr: { status: evaluated, services: { conf-res-004: false } }

@@ -35,7 +35,12 @@ jobs:
         run: test -z "$(gofmt -l .)"
 
       - name: Run tests
-        run: go test ./...
+        run: go test -race ./...
+
+      - name: Test and lint CI scripts
+        run: |
+          bash ci/test/vern-ci-test.sh
+          shellcheck ci/*.sh ci/test/*.sh
 
       - name: Run Vern review
         run: go run . review
@@ -48,3 +53,40 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
+
+  integration:
+    name: Integration (Elasticsearch, Basic license)
+    runs-on: ubuntu-latest
+
+    services:
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          xpack.license.self_generated.type: basic
+          ES_JAVA_OPTS: -Xms1g -Xmx1g
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -sf localhost:9200/_cluster/health"
+          --health-interval 10s
+          --health-retries 30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # -p 1: the packages share one Elasticsearch and the cluster-wide
+      # metrics-otel@custom template (one test deletes it while the other
+      # package re-creates it), so their test binaries must not run in parallel.
+      - name: Run integration tests
+        env:
+          VERN_TEST_ES_URL: http://localhost:9200
+        run: go test -p 1 -tags integration ./internal/engine/elastic/ ./internal/conformance/ ./internal/sensitive/

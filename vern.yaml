@@ -25,6 +25,11 @@ esql:
   # Keep this longer than the workflow's expected runtime and schedule interval.
   score_lookback: "2h"
 
+  # Prefix ES|QL rule queries with `SET unmapped_fields="nullify";` so rules
+  # that reference fields absent from the data return null instead of failing
+  # with "Unknown column". Requires ES 9.5+. Set to "off" to disable.
+  unmapped_fields: "nullify"
+
   # Elasticsearch index patterns for OTel data.
   # Defaults match Elastic Serverless OTLP ingestion (data streams created
   # automatically when sending via the project's OTLP endpoint). If you ingest
@@ -68,7 +73,7 @@ filters:
 # so builds remain reproducible.
 spec:
   upstream_repo: "instrumentation-score/spec"
-  upstream_ref: "main"
+  upstream_ref: "ef080a8a42d2fe73a4f0ed8d64eda93bfe84adc7"
 
 # Upstream semantic-conventions source. `vern semconv sync` regenerates
 # internal/semconv/attribute_keys.go and placement.go from the pinned ref.
@@ -76,13 +81,45 @@ semconv:
   upstream_repo: "open-telemetry/semantic-conventions"
   upstream_ref: "v1.37.0"
 
-# Elastic connection (used by `vern sync`)
-# The sync target is the KIBANA URL, not the Elasticsearch URL.
-# Can also be set via environment variables:
-#   VERN_API_KEY, VERN_KIBANA_URL
+# Elastic connection.
+# `vern sync` uses kibana_url; `vern evaluate --backend elastic` uses
+# elasticsearch_url. Both share api_key. Can also be set via environment
+# variables: VERN_API_KEY, VERN_KIBANA_URL, VERN_ELASTICSEARCH_URL.
 elastic:
   # kibana_url: "https://<your-project>.kb.elastic.cloud"
+  # elasticsearch_url: "https://<your-project>.es.elastic.cloud"
   # api_key: ""  # Prefer VERN_API_KEY env var
+
+# OpenSearch connection (used by `vern evaluate --backend opensearch`).
+# Env-var fallbacks: VERN_OPENSEARCH_URL, VERN_OPENSEARCH_USERNAME,
+# VERN_OPENSEARCH_PASSWORD.
+# opensearch:
+#   url: "https://opensearch.example.com:9200"
+#   username: "admin"
+#   password: ""  # Prefer VERN_OPENSEARCH_PASSWORD
+#   # OpenSearch PPL uses INTERVAL units, e.g. "30 DAY", "1 HOUR".
+#   time_window: "30 DAY"
+#   # Defaults follow SS4O naming written by the OTel Collector's opensearch
+#   # exporter. For Data Prepper pipelines use e.g. traces: "otel-v1-apm-span-*".
+#   index_patterns:
+#     traces: "ss4o_traces-*-*"
+#     metrics: "ss4o_metrics-*-*"
+#     logs: "ss4o_logs-*-*"
+
+# ClickHouse connection (used by `vern evaluate --backend clickhouse`).
+# Env-var fallbacks: VERN_CLICKHOUSE_URL, VERN_CLICKHOUSE_USERNAME,
+# VERN_CLICKHOUSE_PASSWORD.
+# clickhouse:
+#   url: "http://localhost:8123"
+#   username: "default"
+#   password: ""  # Prefer VERN_CLICKHOUSE_PASSWORD
+#   database: "otel"
+#   # ClickHouse uses INTERVAL units, not relative time strings: "30 DAY", "6 HOUR", etc.
+#   time_window: "30 DAY"
+#   tables:
+#     traces: "otel_traces"
+#     logs: "otel_logs"
+#     metrics: "otel_metrics_sum"
 
 # Services to exclude from evaluation
 # Useful for ignoring internal/system services
